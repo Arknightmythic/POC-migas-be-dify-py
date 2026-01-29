@@ -38,6 +38,7 @@ class DocumentProcessorHandler:
                 if response.status_code != 200:
                     print(f"extract-pdf API returned error: {response.text}")
                     return
+                shutil.copy(input_path, output_path)
 
                 # data = response.json()
 

@@ -59,6 +59,8 @@ class DocumentProcessorHandler:
             original_filename = task.get("original_filename")
             doc_id = task.get("doc_id")
 
+            print("temp_input_path ",temp_input_path)
+
             if not all([temp_input_path, original_filename, doc_id]):
                 print(f"⚠️ Warning: Invalid task data received: {task}. Skipping.")
                 continue

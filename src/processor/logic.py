@@ -64,6 +64,8 @@ class AIServiceLogic:
         processed_pdf_name = f"{name}_processed.pdf"
         ocr_output_path = os.path.join(self.ocr_handler.output_dir, processed_pdf_name)
 
+        print("ocr_output_path :",ocr_output_path)
+
         if not os.path.exists(ocr_output_path):
             raise FileNotFoundError(f"File PDF hasil OCR tidak ditemukan di: {ocr_output_path}")
 
