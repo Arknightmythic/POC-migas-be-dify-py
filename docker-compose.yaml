@@ -1,0 +1,13 @@
+services:
+  dokuprime-api-gemini:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dokuprime_api_gemini
+    image: dokuprime_api_gemini
+    # network_mode: "host"
+    volumes:
+      - C:\Dokuprime\main\public:/app/public
+    ports:
+      - "9797:9797"
+    restart: always

@@ -1,0 +1,40 @@
+# --- Environment ---
+# Ignore the virtual environment folder
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- IDE / Editor ---
+# Ignore IDE-specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Dependencies / Build artifacts ---
+# Ignore package distribution files
+/dist/
+/build/
+*.egg-info/
+*.egg
+
+# --- Sensitive Information ---
+# Ignore local environment variables and secrets
+.env
+.env.*.local
+.env.local
+
+# --- Input/Output and Temporary Files ---
+# Ignore uploaded files, processed results, and temporary files
+/input_files/
+/output_files/
+temp_page_*.png
+*.log
+
+# --- OS-specific files ---
+# Mac
+.DS_Store
+# Windows
+Thumbs.db
