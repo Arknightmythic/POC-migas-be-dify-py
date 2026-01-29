@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 # --- Impor kelas-kelas yang sudah Anda buat ---
 from ..doc_processor.handler import DocumentProcessorHandler as OcrHandler
-from ..dify_processor.runner import process_document_with_llm
+# from ..dify_processor.runner import process_document_with_llm
 from ..dify_processor.llm import LLM
 from ..dify_processor.dify import DifyDataset
 
@@ -82,13 +82,13 @@ class AIServiceLogic:
         dify_temp_output_folder = "dify_temp_output"
         os.makedirs(dify_temp_output_folder, exist_ok=True)
 
-        process_document_with_llm(
-            input_folder=self.output_pdf_dir,
-            output_folder=dify_temp_output_folder,
-            file_name=final_pdf_filename,
-            llm=self.dify_llm,
-            dataset=DummyDifyDataset() 
-        )
+        # process_document_with_llm(
+        #     input_folder=self.output_pdf_dir,
+        #     output_folder=dify_temp_output_folder,
+        #     file_name=final_pdf_filename,
+        #     llm=self.dify_llm,
+        #     dataset=DummyDifyDataset() 
+        # )
         
         incorrectly_named_txt_path = os.path.join(dify_temp_output_folder, f"{final_pdf_filename}.txt")
         

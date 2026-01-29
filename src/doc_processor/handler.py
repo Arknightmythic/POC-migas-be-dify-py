@@ -1,7 +1,7 @@
 # src/doc_processor/handler.py
 
 import os
-import shutil
+import shutil, requests
 import fitz  # PyMuPDF
 from . import utils # Import our new utils module
 
@@ -25,40 +25,48 @@ class DocumentProcessorHandler:
 
         print(f"\n--- Starting process for: {filename} ---")
 
-        if extension.lower() == '.docx':
-            print("Word file detected. Converting to PDF...")
-            utils.convert(input_path, output_path)
-            print(f"Word to PDF conversion successful: {output_path}")
+        if extension.lower() == '.pdf':
+            try:
+                print("PDF detected. Forwarding to external extract-pdf API...")
 
-        elif extension.lower() in ['.png', '.jpeg', '.jpg']:
-            print("Image file detected. Using Gemma Vision...")
-            final_text = utils.extract_text_with_gemini_vision(input_path)
-            if final_text:
-                utils.create_searchable_pdf(final_text, output_path)
-            else:
-                print(f"Failed to extract text from {filename}. Skipping PDF creation.")
+                with open(input_path, "rb") as f:
+                    response = requests.post(
+                        "http://172.16.12.98:9888/extract-pdf",
+                        files={"file": (filename, f, "application/pdf")}
+                    )
 
-        elif extension.lower() == '.pdf':
-            if not utils.is_pdf_scanned(input_path):
-                print("This PDF is already searchable. Copying file...")
-                shutil.copy(input_path, output_path)
-            else:
-                print("Scanned PDF detected. Running Gemma Vision page by page...")
-                doc = fitz.open(input_path)
-                full_final_text = ""
-                for i, page in enumerate(doc):
-                    print(f"  - Processing page {i+1} with Gemma Vision...")
-                    pix = page.get_pixmap(dpi=300)
-                    img_path = f"temp_page_{i}.png"
-                    pix.save(img_path)
-                    page_text = utils.extract_text_with_gemini_vision(img_path)
-                    full_final_text += page_text + "\n\n"
-                    os.remove(img_path)
+                if response.status_code != 200:
+                    print(f"extract-pdf API returned error: {response.text}")
+                    return
+
+                # data = response.json()
+
+                # cleaned_text = data.get("cleaned_text", "")
+
+            except Exception as e:
+                print(f"Error processing PDF via external API: {e}")
+
+        # elif extension.lower() == '.pdf':
+        #     if not utils.is_pdf_scanned(input_path):
+        #         print("This PDF is already searchable. Copying file...")
+        #         shutil.copy(input_path, output_path)
+        #     else:
+        #         print("Scanned PDF detected. Running Gemma Vision page by page...")
+        #         doc = fitz.open(input_path)
+        #         full_final_text = ""
+        #         for i, page in enumerate(doc):
+        #             print(f"  - Processing page {i+1} with Gemma Vision...")
+        #             pix = page.get_pixmap(dpi=300)
+        #             img_path = f"temp_page_{i}.png"
+        #             pix.save(img_path)
+        #             page_text = utils.extract_text_with_gemini_vision(img_path)
+        #             full_final_text += page_text + "\n\n"
+        #             os.remove(img_path)
                 
-                if full_final_text.strip():
-                    utils.create_searchable_pdf(full_final_text, output_path)
-                else:
-                    print(f"Failed to extract text from {filename}. Skipping PDF creation.")
+        #         if full_final_text.strip():
+        #             utils.create_searchable_pdf(full_final_text, output_path)
+        #         else:
+        #             print(f"Failed to extract text from {filename}. Skipping PDF creation.")
         else:
             print(f"File format {extension} is not supported.")
 

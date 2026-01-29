@@ -31,7 +31,7 @@ class AIServiceAPI: # Ganti nama kelas agar sesuai
         # --- PERBAIKAN DI SINI ---
         # Gunakan router yang benar dan hapus prefix agar URL-nya menjadi http://localhost:9798/process-batch
         self.app.include_router(processor_router, prefix="", tags=["Document Processing"])
-        self.app.include_router(image_processor_router, prefix="/image-processor", tags=["Image to PDF Conversion"])
+        self.app.include_router(image_processor_router, prefix="/image-processor", tags=["Image to TXT Conversion"])
     def run(self):
         uvicorn.run(
             self.app,
