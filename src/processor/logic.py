@@ -50,20 +50,19 @@ class AIServiceLogic:
         os.makedirs(self.output_txt_dir, exist_ok=True)
 
 
-    async def run_full_process(self, input_path: str, original_filename: str):
+    async def run_full_process(self, input_path: str, original_filename: str, doc_id: str):
         """
         Menjalankan proses: Ekstraksi via API Luar -> Upload ke Dify -> Pindah ke Folder Public
         """
         
-        # --- Tahap 1: Panggil Handler (API Eksternal) ---
-        print(f"🔬 Memulai proses OCR (External API) untuk: {original_filename}")
+        # --- Tahap 1: Proses OCR/Konversi Dokumen ---
+        print(f"🔬 Memulai proses OCR untuk: {original_filename}")
         self.ocr_handler.process_document(input_path)
 
-        # Siapkan nama file
         processed_basename = os.path.basename(input_path)
         name, _ = os.path.splitext(processed_basename)
         
-        # Nama file hasil proses di folder output_files milik handler
+        # Nama file sementara yang dihasilkan oleh handler OCR (format: UUID-Filename_processed.*)
         generated_pdf_name = f"{name}_processed.pdf"
         generated_txt_name = f"{name}_processed.txt"
         
@@ -83,21 +82,24 @@ class AIServiceLogic:
             raise FileNotFoundError(f"PDF Output tidak ditemukan: {source_pdf_path}")
 
         # --- Tahap 3: Handle TXT (Upload Dify & Pindah File) ---
-        final_txt_filename = f"{original_name_base}.txt"
+        
+        # --- PERUBAHAN DI SINI: Format Nama File TXT ---
+        # Format: NamaFileAsli-UUID.txt
+        final_txt_filename = f"{original_name_base}-{doc_id}.txt"
+        
         final_txt_path = os.path.join(self.output_txt_dir, final_txt_filename)
         db_txt_path = None
 
         if os.path.exists(source_txt_path):
-            # 3a. Upload ke Dify
+            # 3a. Upload ke Dify (menggunakan file sementara sebelum dipindah/rename)
             try:
                 print(f"Mengunggah hasil ekstraksi '{generated_txt_name}' ke Dify...")
                 self.dify_dataset.upload_document_to_dataset(file_path=source_txt_path)
                 print(f"✅ Upload ke Dify berhasil!")
             except Exception as e:
                 print(f"❌ Upload ke Dify gagal: {e}")
-                # Kita tetap lanjut memindahkan file meskipun upload dify gagal (opsional)
 
-            # 3b. Pindahkan TXT ke Folder Public
+            # 3b. Pindahkan TXT ke Folder Public dengan nama baru
             shutil.move(source_txt_path, final_txt_path)
             db_txt_path = f"/legal_processed/{final_txt_filename}"
             print(f"✅ TXT dipindahkan ke: {db_txt_path}")

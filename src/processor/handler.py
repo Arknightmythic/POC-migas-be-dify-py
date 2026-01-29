@@ -16,12 +16,10 @@ class DocumentProcessorHandler:
         os.makedirs(self.input_dir, exist_ok=True)
         print("DocumentProcessorHandler Initialized")
 
-    # --- TAMBAHKAN KODE DI BAWAH INI ---
     async def delete_document(self, document_name: str):
         """Menghapus dokumen dari Dify dataset."""
         print(f"Received request to delete document from Dify: {document_name}")
         try:
-            # Panggil metode delete dari logic.dify_dataset secara langsung
             success = self.logic.dify_dataset.delete_document_from_dataset(document_name)
             if success:
                 return {"status": "success", "message": f"Document '{document_name}' deleted from Dify."}
@@ -30,7 +28,6 @@ class DocumentProcessorHandler:
         except Exception as e:
             print(f"Error during Dify deletion process: {e}")
             raise HTTPException(status_code=500, detail="An internal error occurred during Dify deletion.")
-    # --- BATAS AKHIR PENAMBAHAN KODE ---
 
     async def notify_main_api(self, doc_id: UUID, status: str, pdf_path: str = None, txt_path: str = None):
         """Kirim status kembali ke API Utama."""
@@ -59,8 +56,6 @@ class DocumentProcessorHandler:
             original_filename = task.get("original_filename")
             doc_id = task.get("doc_id")
 
-            print("temp_input_path ",temp_input_path)
-
             if not all([temp_input_path, original_filename, doc_id]):
                 print(f"⚠️ Warning: Invalid task data received: {task}. Skipping.")
                 continue
@@ -68,7 +63,12 @@ class DocumentProcessorHandler:
             try:
                 print(f"\n--- Starting AI processing for: {original_filename} (ID: {doc_id}) ---")
                 
-                pdf_path, txt_path = await self.logic.run_full_process(temp_input_path, original_filename=original_filename)
+                # --- PERUBAHAN DI SINI: Passing doc_id ke run_full_process ---
+                pdf_path, txt_path = await self.logic.run_full_process(
+                    input_path=temp_input_path, 
+                    original_filename=original_filename,
+                    doc_id=str(doc_id)
+                )
                 
                 await self.notify_main_api(doc_id, "completed", pdf_path, txt_path)
 
