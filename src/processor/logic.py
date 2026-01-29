@@ -52,71 +52,56 @@ class AIServiceLogic:
 
     async def run_full_process(self, input_path: str, original_filename: str):
         """
-        Menjalankan kedua proses secara berurutan dengan mengintegrasikan kelas Anda.
+        Menjalankan proses: Ekstraksi via API Luar -> Upload ke Dify -> Pindah ke Folder Public
         """
         
-        # --- Tahap 1: Proses OCR/Konversi Dokumen ---
-        print(f"🔬 Memulai proses OCR untuk: {original_filename}")
+        # --- Tahap 1: Panggil Handler (API Eksternal) ---
+        print(f"🔬 Memulai proses OCR (External API) untuk: {original_filename}")
         self.ocr_handler.process_document(input_path)
 
+        # Siapkan nama file
         processed_basename = os.path.basename(input_path)
         name, _ = os.path.splitext(processed_basename)
-        processed_pdf_name = f"{name}_processed.pdf"
-        ocr_output_path = os.path.join(self.ocr_handler.output_dir, processed_pdf_name)
+        
+        # Nama file hasil proses di folder output_files milik handler
+        generated_pdf_name = f"{name}_processed.pdf"
+        generated_txt_name = f"{name}_processed.txt"
+        
+        source_pdf_path = os.path.join(self.ocr_handler.output_dir, generated_pdf_name)
+        source_txt_path = os.path.join(self.ocr_handler.output_dir, generated_txt_name)
 
-        print("ocr_output_path :",ocr_output_path)
-
-        if not os.path.exists(ocr_output_path):
-            raise FileNotFoundError(f"File PDF hasil OCR tidak ditemukan di: {ocr_output_path}")
-
+        # --- Tahap 2: Pindahkan PDF ke Folder Public ---
         original_name_base, _ = os.path.splitext(original_filename)
         final_pdf_filename = f"{original_name_base}.pdf"
-        final_pdf_path_on_disk = os.path.join(self.output_pdf_dir, final_pdf_filename)
-        # Gunakan shutil.move untuk memindahkan file PDF juga agar konsisten
-        shutil.move(ocr_output_path, final_pdf_path_on_disk)
-        
-        db_pdf_path = f"/legal/{final_pdf_filename}"
-        print(f"✅ Proses OCR selesai. File disimpan di: {db_pdf_path}")
+        final_pdf_path = os.path.join(self.output_pdf_dir, final_pdf_filename)
 
+        if os.path.exists(source_pdf_path):
+            shutil.move(source_pdf_path, final_pdf_path)
+            db_pdf_path = f"/legal/{final_pdf_filename}"
+            print(f"✅ PDF dipindahkan ke: {db_pdf_path}")
+        else:
+            raise FileNotFoundError(f"PDF Output tidak ditemukan: {source_pdf_path}")
 
-        # --- Tahap 2: Proses Analisis & Chunking Dify ---
-        print(f"🧠 Memulai proses Dify untuk: {original_filename}")
-        dify_temp_output_folder = "dify_temp_output"
-        os.makedirs(dify_temp_output_folder, exist_ok=True)
-
-        # process_document_with_llm(
-        #     input_folder=self.output_pdf_dir,
-        #     output_folder=dify_temp_output_folder,
-        #     file_name=final_pdf_filename,
-        #     llm=self.dify_llm,
-        #     dataset=DummyDifyDataset() 
-        # )
-        
-        incorrectly_named_txt_path = os.path.join(dify_temp_output_folder, f"{final_pdf_filename}.txt")
-        
-        if not os.path.exists(incorrectly_named_txt_path):
-            print("⚠️ Proses Dify tidak menghasilkan file .txt, mungkin karena tidak ada teks.")
-            return db_pdf_path, None
-
+        # --- Tahap 3: Handle TXT (Upload Dify & Pindah File) ---
         final_txt_filename = f"{original_name_base}.txt"
-        correctly_named_txt_path = os.path.join(dify_temp_output_folder, final_txt_filename)
-        os.rename(incorrectly_named_txt_path, correctly_named_txt_path)
+        final_txt_path = os.path.join(self.output_txt_dir, final_txt_filename)
+        db_txt_path = None
 
-        try:
-            print(f"Mengunggah file '{final_txt_filename}' ke Dify secara manual...")
-            self.dify_dataset.upload_document_to_dataset(file_path=correctly_named_txt_path)
-            print(f"Unggahan dokumen {final_txt_filename} ke dataset berhasil!")
-        except Exception as e:
-            print(f"Unggahan dokumen {final_txt_filename} gagal: {e}")
-            return db_pdf_path, None
+        if os.path.exists(source_txt_path):
+            # 3a. Upload ke Dify
+            try:
+                print(f"Mengunggah hasil ekstraksi '{generated_txt_name}' ke Dify...")
+                self.dify_dataset.upload_document_to_dataset(file_path=source_txt_path)
+                print(f"✅ Upload ke Dify berhasil!")
+            except Exception as e:
+                print(f"❌ Upload ke Dify gagal: {e}")
+                # Kita tetap lanjut memindahkan file meskipun upload dify gagal (opsional)
 
-        # --- PERBAIKAN DI SINI ---
-        # Ganti os.rename dengan shutil.move untuk memindahkan file akhir
-        final_txt_path_on_disk = os.path.join(self.output_txt_dir, final_txt_filename)
-        shutil.move(correctly_named_txt_path, final_txt_path_on_disk)
-        # --- AKHIR PERBAIKAN ---
-        
-        db_txt_path = f"/legal_processed/{final_txt_filename}"
-        print(f"✅ Proses Dify selesai. File disimpan di: {db_txt_path}")
+            # 3b. Pindahkan TXT ke Folder Public
+            shutil.move(source_txt_path, final_txt_path)
+            db_txt_path = f"/legal_processed/{final_txt_filename}"
+            print(f"✅ TXT dipindahkan ke: {db_txt_path}")
+        else:
+            print(f"⚠️ File TXT tidak ditemukan di {source_txt_path}. API mungkin gagal mengekstrak teks.")
 
-        return db_pdf_path, db_txt_path 
+        return db_pdf_path, db_txt_path
