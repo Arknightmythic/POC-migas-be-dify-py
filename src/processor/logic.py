@@ -52,7 +52,7 @@ class AIServiceLogic:
 
     async def run_full_process(self, input_path: str, original_filename: str, doc_id: str):
         """
-        Menjalankan proses: Ekstraksi via API Luar -> Upload ke Dify -> Pindah ke Folder Public
+        Menjalankan proses: Ekstraksi via API Luar -> Rename -> Upload ke Dify -> Pindah ke Folder Public
         """
         
         # --- Tahap 1: Proses OCR/Konversi Dokumen ---
@@ -62,16 +62,20 @@ class AIServiceLogic:
         processed_basename = os.path.basename(input_path)
         name, _ = os.path.splitext(processed_basename)
         
-        # Nama file sementara yang dihasilkan oleh handler OCR (format: UUID-Filename_processed.*)
+        # Nama file output raw dari handler OCR
         generated_pdf_name = f"{name}_processed.pdf"
         generated_txt_name = f"{name}_processed.txt"
         
         source_pdf_path = os.path.join(self.ocr_handler.output_dir, generated_pdf_name)
         source_txt_path = os.path.join(self.ocr_handler.output_dir, generated_txt_name)
 
-        # --- Tahap 2: Pindahkan PDF ke Folder Public ---
+        # Siapkan nama file akhir yang diinginkan: {NamaFile}-{UUID}
         original_name_base, _ = os.path.splitext(original_filename)
-        final_pdf_filename = f"{original_name_base}.pdf"
+        
+        final_pdf_filename = f"{original_name_base}.pdf" # PDF tetap nama file asli
+        final_txt_filename = f"{original_name_base}-{doc_id}.txt" # TXT pakai UUID
+
+        # --- Tahap 2: Pindahkan PDF ke Folder Public ---
         final_pdf_path = os.path.join(self.output_pdf_dir, final_pdf_filename)
 
         if os.path.exists(source_pdf_path):
@@ -81,26 +85,28 @@ class AIServiceLogic:
         else:
             raise FileNotFoundError(f"PDF Output tidak ditemukan: {source_pdf_path}")
 
-        # --- Tahap 3: Handle TXT (Upload Dify & Pindah File) ---
-        
-        # --- PERUBAHAN DI SINI: Format Nama File TXT ---
-        # Format: NamaFileAsli-UUID.txt
-        final_txt_filename = f"{original_name_base}-{doc_id}.txt"
-        
+        # --- Tahap 3: Handle TXT (Rename -> Upload Dify -> Pindah File) ---
         final_txt_path = os.path.join(self.output_txt_dir, final_txt_filename)
         db_txt_path = None
 
         if os.path.exists(source_txt_path):
-            # 3a. Upload ke Dify (menggunakan file sementara sebelum dipindah/rename)
+            # 3a. RENAME file di folder sementara TERLEBIH DAHULU
+            # Agar saat di-upload ke Dify, namanya sudah benar.
+            temp_renamed_txt_path = os.path.join(self.ocr_handler.output_dir, final_txt_filename)
+            os.rename(source_txt_path, temp_renamed_txt_path)
+            
+            # 3b. Upload ke Dify (menggunakan file yang sudah di-rename)
             try:
-                print(f"Mengunggah hasil ekstraksi '{generated_txt_name}' ke Dify...")
-                self.dify_dataset.upload_document_to_dataset(file_path=source_txt_path)
+                print(f"Mengunggah hasil ekstraksi '{final_txt_filename}' ke Dify...")
+                self.dify_dataset.upload_document_to_dataset(file_path=temp_renamed_txt_path)
                 print(f"✅ Upload ke Dify berhasil!")
             except Exception as e:
                 print(f"❌ Upload ke Dify gagal: {e}")
 
-            # 3b. Pindahkan TXT ke Folder Public dengan nama baru
-            shutil.move(source_txt_path, final_txt_path)
+            # 3c. Pindahkan TXT ke Folder Public
+            # Kita memindahkan temp_renamed_txt_path karena source_txt_path sudah tidak ada (sudah direname)
+            shutil.move(temp_renamed_txt_path, final_txt_path)
+            
             db_txt_path = f"/legal_processed/{final_txt_filename}"
             print(f"✅ TXT dipindahkan ke: {db_txt_path}")
         else:
