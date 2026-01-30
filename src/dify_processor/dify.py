@@ -5,11 +5,18 @@ import requests
 from pathlib import Path
 
 class DifyDataset:
-    def __init__(self, base_url, id, api_key):
+    # Update __init__ untuk menerima parameter konfigurasi dengan default value
+    def __init__(self, base_url, id, api_key, separator="=== Halaman", max_tokens=2000, chunk_overlap=300):
         self.base_url = base_url
         self.id = id
         self.api_key = api_key
-        print("DifyDataset Initialized")
+        
+        # Simpan konfigurasi ke dalam instance
+        self.separator = separator
+        self.max_tokens = int(max_tokens) # Pastikan integer
+        self.chunk_overlap = int(chunk_overlap) # Pastikan integer
+        
+        print(f"DifyDataset Initialized (Separator: '{self.separator}', Max Tokens: {self.max_tokens}, Overlap: {self.chunk_overlap})")
         
     def upload_document_to_dataset(self, file_path):
         """Upload a document to a dataset using the API."""
@@ -26,6 +33,8 @@ class DifyDataset:
         files = {
             'file': (file_path_obj.name, open(file_path, 'rb'))
         }
+        
+        # Gunakan variabel self.xxx di dalam payload
         data_payload = {
             "indexing_technique": "high_quality",
             "process_rule": {
@@ -35,14 +44,15 @@ class DifyDataset:
                         {"id": "remove_urls_emails", "enabled": False}
                     ],
                     "segmentation": {
-                        "separator": "===[TEXT]===",
-                        "max_tokens": 4000,
-                        "chunk_overlap": 400
+                        "separator": self.separator,       # <-- Dinamis dari ENV
+                        "max_tokens": self.max_tokens,     # <-- Dinamis dari ENV
+                        "chunk_overlap": self.chunk_overlap # <-- Dinamis dari ENV
                     }
                 },
                 "mode": "custom"
             }
         }
+        
         data = {
             'data': (None, json.dumps(data_payload), 'text/plain')
         }

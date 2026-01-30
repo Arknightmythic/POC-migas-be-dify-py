@@ -31,11 +31,19 @@ class AIServiceLogic:
             gemini_model=os.getenv("GEMINI_MODEL"),
             embedding_model=os.getenv("GEMINI_EMBEDDING_MODEL")
         )
+
+        separator = os.getenv("DIFY_SEPARATOR", "=== Halaman")
+        max_tokens = os.getenv("DIFY_MAX_TOKENS", 2000)
+        chunk_overlap = os.getenv("DIFY_CHUNK_OVERLAP", 300)
+
         # Inisialisasi dataset Dify yang asli untuk digunakan nanti
         self.dify_dataset = DifyDataset(
             base_url=os.getenv("DATASET_BASE_URL"),
             id=os.getenv("DATASET_ID"),
-            api_key=os.getenv("DATASET_API_KEY")
+            api_key=os.getenv("DATASET_API_KEY"),
+            separator=separator,
+            max_tokens=max_tokens,
+            chunk_overlap=chunk_overlap
         )
 
         # Konfigurasi path dari .env
