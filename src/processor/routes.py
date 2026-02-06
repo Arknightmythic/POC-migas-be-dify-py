@@ -55,3 +55,40 @@ async def process_document_batch(
     return {
         "message": f"Accepted {len(tasks_to_run)} files for processing. This will continue in the background."
     }
+
+@router.post("/knowledge/upload-qna")
+async def upload_qna_document(
+    file: UploadFile = File(...)
+):
+    """
+    Endpoint khusus untuk menerima file QnA (.txt) dari Main BE 
+    dan langsung menguploadnya ke Dify Dataset (QnA).
+    """
+    if not file.filename.endswith('.txt'):
+        raise HTTPException(status_code=400, detail="Only .txt files are allowed for QnA upload.")
+
+    # Simpan sementara
+    temp_path = os.path.join(handler.input_dir, file.filename)
+    try:
+        async with aiofiles.open(temp_path, 'wb') as out_file:
+            content = await file.read()
+            await out_file.write(content)
+        
+        # Upload langsung ke Dify (DATASET QnA)
+        try:
+            print(f"Uploading QnA file {file.filename} to Dify (QnA Dataset)...")
+            
+            # --- PERUBAHAN DI SINI: Gunakan qna_dataset ---
+            handler.logic.qna_dataset.upload_document_to_dataset(file_path=temp_path)
+            
+            print(f"✅ QnA Upload Success: {file.filename}")
+            return {"message": "QnA uploaded successfully to Dify"}
+        except Exception as e:
+            print(f"❌ Dify Upload Error: {e}")
+            raise HTTPException(status_code=500, detail=f"Dify upload failed: {e}")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Processing failed: {e}")
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)

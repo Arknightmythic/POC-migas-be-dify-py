@@ -1,6 +1,5 @@
 # src/image_processor/handler.py
 import os
-import shutil
 import httpx
 from uuid import UUID
 from fastapi import UploadFile, HTTPException
@@ -14,15 +13,7 @@ class ImageProcessorHandler:
         self.temp_dir = "image_processor_temp"
         os.makedirs(self.temp_dir, exist_ok=True)
         
-        # Path ke direktori 'public' di backend utama dari .env
-        self.main_api_public_path = os.getenv("MAIN_API_PUBLIC_PATH")
-        if not self.main_api_public_path:
-            raise ValueError("MAIN_API_PUBLIC_PATH environment variable not set.")
-
-        # # Direktori tujuan akhir di backend utama
-        self.raw_images_dir = os.path.join(self.main_api_public_path, "raw_images")
-        os.makedirs(self.raw_images_dir, exist_ok=True)
-
+        self.MAIN_API_BASE_URL = os.getenv("MAIN_API_BASE_URL")
         # URL Callback ke backend utama dari .env
         self.callback_url = os.getenv("IMAGE_EXTRACTION_CALLBACK_URL")
         print("ImageProcessorHandler Initialized")
@@ -42,43 +33,67 @@ class ImageProcessorHandler:
             except httpx.RequestError as e:
                 print(f"❌ Failed to send callback for doc {payload.get('document_id')}: {e}")
 
+    async def upload_file_to_main_be(self, file_path: str, folder_category: str):
+        if not os.path.exists(file_path): return None
+        url = f"{self.MAIN_API_BASE_URL}/api/sistem-documents/store-file"
+        filename = os.path.basename(file_path)
+        async with httpx.AsyncClient() as client:
+            try:
+                with open(file_path, "rb") as f:
+                    files = {"file": (filename, f)}
+                    data = {"folder_category": folder_category}
+                    print(f"🚀 Uploading {filename} to Main BE...")
+                    response = await client.post(url, files=files, data=data, timeout=60)
+                    response.raise_for_status()
+                    return response.json().get('saved_path')
+            except Exception as e:
+                print(f"❌ Upload failed: {e}")
+                return None        
+
     async def convert_image_to_pdf(self, temp_input_path: str, original_filename: str, document_id: UUID):
         raw_image_db_path = None
         try:
-            # 1. Pindahkan gambar asli ke direktori publik
-            final_raw_image_path = os.path.join(self.raw_images_dir, original_filename)
-            shutil.copy(temp_input_path, final_raw_image_path)
-            raw_image_db_path = f"/raw_images/{original_filename}"
-            print(f"✅ Raw image saved to: {final_raw_image_path}")
+           # 1. Upload Raw Image ke Main BE (Ganti shutil.copy)
+            # Kita perlu kategori 'raw_images' di Main BE handler
+            raw_image_db_path = await self.upload_file_to_main_be(temp_input_path, "raw_images")
+            print(f"✅ Raw image uploaded: {raw_image_db_path}")
 
-            # 2. Ekstrak teks dari gambar
+            # 2. Ekstrak teks (Logic OcrUtils tetap sama karena baca file temp lokal)
             text_content = OcrUtils.extract_text_with_gemini_vision(temp_input_path)
-            if not text_content:
-                raise ValueError("Text extraction failed.")
+            if not text_content: raise ValueError("Text extraction failed.")
 
-            # 3. Klasifikasikan konten
+            # 3. Klasifikasi
             category = OcrUtils.classify_image_content(original_filename, text_content)
 
-            # 4. Tentukan direktori output PDF dan buat PDF
-            output_folder_name = category if category != 'general' else 'extract_results'
-            final_output_dir = os.path.join(self.main_api_public_path, output_folder_name)
-            os.makedirs(final_output_dir, exist_ok=True)
-            
+            # 4. Buat PDF di folder TEMP lokal AI Service
             base_name, _ = os.path.splitext(original_filename)
             output_filename = f"{base_name}.pdf"
-            final_output_path = os.path.join(final_output_dir, output_filename)
-            OcrUtils.create_searchable_pdf(text_content, final_output_path)
+            temp_pdf_path = os.path.join(self.temp_dir, output_filename) # Simpan di temp lokal dulu
             
-            # 5. Kirim callback sukses dengan kedua path
-            pdf_db_path = f"/{output_folder_name}/{output_filename}"
+            OcrUtils.create_searchable_pdf(text_content, temp_pdf_path)
+            
+            # 5. Upload PDF ke Main BE
+            # Tentukan kategori folder berdasarkan hasil klasifikasi
+            # Jika 'general', mungkin masuk ke 'legal' atau folder khusus 'extract_results'
+            # Di Main BE handler folder_map perlu disesuaikan jika ingin dinamis. 
+            # Untuk simplifikasi, kita masukkan ke 'legal' saja atau buat logic mapping di Main BE.
+            
+            # Kita pakai 'legal' untuk semua hasil PDF image extraction agar konsisten
+            pdf_db_path = await self.upload_file_to_main_be(temp_pdf_path, "legal") 
+
+            # 6. Kirim Callback
             payload = {
                 "document_id": str(document_id),
                 "status": "completed",
                 "file_path": pdf_db_path,
-                "raw_image_path": raw_image_db_path, # Path gambar asli
+                "raw_image_path": raw_image_db_path,
                 "category": category
             }
             await self.notify_main_api(payload)
+            
+            # Cleanup local temp PDF
+            if os.path.exists(temp_pdf_path): os.remove(temp_pdf_path)
+            
 
         except Exception as e:
             print(f"❌ Conversion failed for {original_filename}: {e}")

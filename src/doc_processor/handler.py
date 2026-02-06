@@ -14,51 +14,59 @@ class DocumentProcessorHandler:
         os.makedirs(self.output_dir, exist_ok=True)
         print("DocumentProcessorHandler Initialized")
 
-    def process_document(self, input_path: str):
-            filename = os.path.basename(input_path)
-            name, extension = os.path.splitext(filename)
-            
-            # Path output untuk PDF dan TXT
-            output_pdf_path = os.path.join(self.output_dir, f"{name}_processed.pdf")
-            output_txt_path = os.path.join(self.output_dir, f"{name}_processed.txt") # <--- Tambahan path TXT
+    def process_document(self, input_path: str, original_filename: str = None):
+        """
+        Main function to process a single document.
+        """
+        # Nama file fisik di disk (temp file dengan UUID) -> digunakan untuk generate output path yang unik
+        current_filename = os.path.basename(input_path)
+        name, extension = os.path.splitext(current_filename)
+        
+        # Output paths tetap menggunakan current_filename (UUID) agar unik dan bisa dilacak oleh logic.py
+        output_pdf_path = os.path.join(self.output_dir, f"{name}_processed.pdf")
+        output_txt_path = os.path.join(self.output_dir, f"{name}_processed.txt")
 
-            print(f"\n--- Starting process for: {filename} ---")
+        # Nama file yang akan dikirim ke API (Gunakan nama asli jika ada)
+        api_filename = original_filename if original_filename else current_filename
 
-            if extension.lower() == '.pdf':
-                try:
-                    print("PDF detected. Forwarding to external extract-pdf API...")
+        print(f"\n--- Starting process for: {current_filename} (As: {api_filename}) ---")
 
-                    with open(input_path, "rb") as f:
-                        response = requests.post(
-                            "http://172.16.12.98:9888/extract-pdf",
-                            files={"file": (filename, f, "application/pdf")}
-                        )
+        if extension.lower() == '.pdf':
+            try:
+                print(f"PDF detected. Forwarding to external extract-pdf API as '{api_filename}'...")
 
-                    if response.status_code != 200:
-                        print(f"extract-pdf API returned error: {response.text}")
-                        return
-                    
-                    # 1. Simpan PDF (Copy file asli ke output)
-                    shutil.copy(input_path, output_pdf_path)
+                with open(input_path, "rb") as f:
+                    response = requests.post(
+                        "http://103.67.43.152/ocr/extract-pdf",
+                        # Gunakan api_filename di sini agar server menerima nama file asli
+                        files={"file": (api_filename, f, "application/pdf")}
+                    )
 
-                    # 2. Ambil text dari JSON response dan simpan sebagai .txt
-                    data = response.json()
-                    cleaned_text = data.get("cleaned_text", "")
-                    
-                    if cleaned_text:
-                        with open(output_txt_path, "w", encoding="utf-8") as f:
-                            f.write(cleaned_text)
-                        print(f"Text extracted and saved to: {output_txt_path}")
-                    else:
-                        print("Warning: API returned empty 'cleaned_text'")
+                if response.status_code != 200:
+                    print(f"extract-pdf API returned error: {response.text}")
+                    return
+                
+                # 1. Simpan PDF (Copy file asli ke output)
+                shutil.copy(input_path, output_pdf_path)
 
-                except Exception as e:
-                    print(f"Error processing PDF via external API: {e}")
+                # 2. Ambil text dari JSON response dan simpan sebagai .txt
+                data = response.json()
+                cleaned_text = data.get("cleaned_text", "")
+                
+                if cleaned_text:
+                    with open(output_txt_path, "w", encoding="utf-8") as f:
+                        f.write(cleaned_text)
+                    print(f"Text extracted and saved to: {output_txt_path}")
+                else:
+                    print("Warning: API returned empty 'cleaned_text'")
 
-            else:
-                print(f"File format {extension} is not supported.")
+            except Exception as e:
+                print(f"Error processing PDF via external API: {e}")
 
-            # Clean up the original input file
-            if os.path.exists(input_path):
-                os.remove(input_path)
-            print(f"--- Finished processing: {filename} ---")
+        else:
+            print(f"File format {extension} is not supported.")
+
+        # Clean up the original input file
+        if os.path.exists(input_path):
+            os.remove(input_path)
+        print(f"--- Finished processing: {current_filename} ---")

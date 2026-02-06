@@ -1,31 +1,20 @@
-# src/processor/logic.py
-
 import os
-import uuid
-import shutil # <-- TAMBAHKAN BARIS INI
+import httpx
 from dotenv import load_dotenv
 
 # --- Impor kelas-kelas yang sudah Anda buat ---
 from ..doc_processor.handler import DocumentProcessorHandler as OcrHandler
-# from ..dify_processor.runner import process_document_with_llm
 from ..dify_processor.llm import LLM
 from ..dify_processor.dify import DifyDataset
 
 load_dotenv()
-
-# Kelas ini memiliki metode 'upload_document_to_dataset' yang tidak melakukan apa-apa.
-# Tujuannya adalah untuk "menipu" skrip runner agar tidak mengunggah file.
-class DummyDifyDataset:
-    def upload_document_to_dataset(self, file_path):
-        print(f"Melewatkan unggahan otomatis untuk: {os.path.basename(file_path)}")
-        pass
 
 class AIServiceLogic:
     def __init__(self):
         # Inisialisasi handler OCR
         self.ocr_handler = OcrHandler()
         
-        # Inisialisasi komponen untuk Dify menggunakan variabel Gemini dari .env
+        # Inisialisasi komponen untuk Dify
         self.dify_llm = LLM(
             gemini_api_key=os.getenv("GEMINI_API_KEY"),
             gemini_model=os.getenv("GEMINI_MODEL"),
@@ -36,7 +25,7 @@ class AIServiceLogic:
         max_tokens = os.getenv("DIFY_MAX_TOKENS", 2000)
         chunk_overlap = os.getenv("DIFY_CHUNK_OVERLAP", 300)
 
-        # Inisialisasi dataset Dify yang asli untuk digunakan nanti
+        # Inisialisasi dataset Dify
         self.dify_dataset = DifyDataset(
             base_url=os.getenv("DATASET_BASE_URL"),
             id=os.getenv("DATASET_ID"),
@@ -46,78 +35,114 @@ class AIServiceLogic:
             chunk_overlap=chunk_overlap
         )
 
+        qna_dataset_id = os.getenv("QNA_DATASET_ID")
+
+        self.qna_dataset = DifyDataset(
+            base_url=os.getenv("DATASET_BASE_URL"), # Asumsi base URL sama
+            id=qna_dataset_id,
+            api_key=os.getenv("DATASET_API_KEY"), # Asumsi API Key sama
+            separator=separator,
+            max_tokens=max_tokens,
+            chunk_overlap=chunk_overlap
+        )
+
         # Konfigurasi path dari .env
-        self.MAIN_API_PUBLIC_PATH = os.getenv('MAIN_API_PUBLIC_PATH')
+        self.MAIN_API_BASE_URL = os.getenv('MAIN_API_BASE_URL')
         self.MAIN_API_CALLBACK_URL = os.getenv('MAIN_API_CALLBACK_URL')
-        if not self.MAIN_API_PUBLIC_PATH or not os.path.isdir(self.MAIN_API_PUBLIC_PATH):
-            raise ValueError("MAIN_API_PUBLIC_PATH is not configured or does not exist.")
-            
-        self.output_pdf_dir = os.path.join(self.MAIN_API_PUBLIC_PATH, "legal")
-        self.output_txt_dir = os.path.join(self.MAIN_API_PUBLIC_PATH, "legal_processed")
-        os.makedirs(self.output_pdf_dir, exist_ok=True)
-        os.makedirs(self.output_txt_dir, exist_ok=True)
+        
+        if not self.MAIN_API_BASE_URL:
+             print("⚠️ MAIN_API_BASE_URL not set. File transfer might fail.")
+
+    # --- HELPER FUNGSI UPLOAD ---
+    async def upload_file_to_main_be(self, file_path: str, folder_category: str):
+        """Mengirim file lokal ke Main Backend via API."""
+        if not os.path.exists(file_path):
+            print(f"❌ File not found for upload: {file_path}")
+            return None
+
+        # Pastikan URL valid
+        if not self.MAIN_API_BASE_URL:
+            print("❌ MAIN_API_BASE_URL not configured.")
+            return None
+
+        url = f"{self.MAIN_API_BASE_URL}/api/sistem-documents/store-file"
+        filename = os.path.basename(file_path)
+        
+        async with httpx.AsyncClient() as client:
+            try:
+                with open(file_path, "rb") as f:
+                    files = {"file": (filename, f)}
+                    data = {"folder_category": folder_category}
+                    print(f"🚀 Uploading {filename} to Main BE ({folder_category})...")
+                    response = await client.post(url, files=files, data=data, timeout=120) # Timeout dinaikkan
+                    response.raise_for_status()
+                    result = response.json()
+                    print(f"✅ Upload success: {result.get('saved_path')}")
+                    return result.get('saved_path')
+            except Exception as e:
+                print(f"❌ Failed to upload file to Main BE: {e}")
+                return None
 
 
     async def run_full_process(self, input_path: str, original_filename: str, doc_id: str):
         """
-        Menjalankan proses: Ekstraksi via API Luar -> Rename -> Upload ke Dify -> Pindah ke Folder Public
+        Menjalankan proses: Ekstraksi via API Luar -> Rename ke Nama Asli -> Upload ke Dify -> Simpan dengan UUID
         """
         
         # --- Tahap 1: Proses OCR/Konversi Dokumen ---
         print(f"🔬 Memulai proses OCR untuk: {original_filename}")
-        self.ocr_handler.process_document(input_path)
+        
+        # Proses OCR (Output file akan ada di self.ocr_handler.output_dir)
+        self.ocr_handler.process_document(input_path, original_filename=original_filename)
 
         processed_basename = os.path.basename(input_path)
         name, _ = os.path.splitext(processed_basename)
         
-        # Nama file output raw dari handler OCR
         generated_pdf_name = f"{name}_processed.pdf"
         generated_txt_name = f"{name}_processed.txt"
         
         source_pdf_path = os.path.join(self.ocr_handler.output_dir, generated_pdf_name)
         source_txt_path = os.path.join(self.ocr_handler.output_dir, generated_txt_name)
 
-        # Siapkan nama file akhir yang diinginkan: {NamaFile}-{UUID}
+        # Siapkan nama file akhir
         original_name_base, _ = os.path.splitext(original_filename)
-        
-        final_pdf_filename = f"{original_name_base}.pdf" # PDF tetap nama file asli
-        final_txt_filename = f"{original_name_base}-{doc_id}.txt" # TXT pakai UUID
+        final_pdf_filename = f"{original_name_base}.pdf"
+        final_txt_filename = f"{original_name_base}-{doc_id}.txt" 
 
-        # --- Tahap 2: Pindahkan PDF ke Folder Public ---
-        final_pdf_path = os.path.join(self.output_pdf_dir, final_pdf_filename)
-
+        # --- Tahap 2: Upload PDF ke Main BE ---
+        db_pdf_path = None
         if os.path.exists(source_pdf_path):
-            shutil.move(source_pdf_path, final_pdf_path)
-            db_pdf_path = f"/legal/{final_pdf_filename}"
-            print(f"✅ PDF dipindahkan ke: {db_pdf_path}")
-        else:
-            raise FileNotFoundError(f"PDF Output tidak ditemukan: {source_pdf_path}")
-
-        # --- Tahap 3: Handle TXT (Rename -> Upload Dify -> Pindah File) ---
-        final_txt_path = os.path.join(self.output_txt_dir, final_txt_filename)
-        db_txt_path = None
-
-        if os.path.exists(source_txt_path):
-            # 3a. RENAME file di folder sementara TERLEBIH DAHULU
-            # Agar saat di-upload ke Dify, namanya sudah benar.
-            temp_renamed_txt_path = os.path.join(self.ocr_handler.output_dir, final_txt_filename)
-            os.rename(source_txt_path, temp_renamed_txt_path)
+            temp_pdf_path = os.path.join(self.ocr_handler.output_dir, final_pdf_filename)
+            if os.path.exists(temp_pdf_path): os.remove(temp_pdf_path)
+            os.rename(source_pdf_path, temp_pdf_path)
             
-            # 3b. Upload ke Dify (menggunakan file yang sudah di-rename)
+            db_pdf_path = await self.upload_file_to_main_be(temp_pdf_path, "legal")
+            
+            if db_pdf_path and os.path.exists(temp_pdf_path):
+                os.remove(temp_pdf_path)
+        else:
+             print(f"⚠️ PDF Output tidak ditemukan: {source_pdf_path}")
+
+        # --- Tahap 3: Handle TXT (Dify & Upload) ---
+        db_txt_path = None
+        if os.path.exists(source_txt_path):
+            temp_txt_path = os.path.join(self.ocr_handler.output_dir, final_txt_filename)
+            if os.path.exists(temp_txt_path): os.remove(temp_txt_path)
+            os.rename(source_txt_path, temp_txt_path)
+            
+            # Upload ke Dify (DATASET UTAMA)
             try:
-                print(f"Mengunggah hasil ekstraksi '{final_txt_filename}' ke Dify...")
-                self.dify_dataset.upload_document_to_dataset(file_path=temp_renamed_txt_path)
-                print(f"✅ Upload ke Dify berhasil!")
+                print(f"Mengunggah ke Dify (Main Dataset)...")
+                self.dify_dataset.upload_document_to_dataset(file_path=temp_txt_path)
             except Exception as e:
                 print(f"❌ Upload ke Dify gagal: {e}")
 
-            # 3c. Pindahkan TXT ke Folder Public
-            # Kita memindahkan temp_renamed_txt_path karena source_txt_path sudah tidak ada (sudah direname)
-            shutil.move(temp_renamed_txt_path, final_txt_path)
-            
-            db_txt_path = f"/legal_processed/{final_txt_filename}"
-            print(f"✅ TXT dipindahkan ke: {db_txt_path}")
+            # Upload ke Main BE via API
+            db_txt_path = await self.upload_file_to_main_be(temp_txt_path, "legal_processed")
+
+            if os.path.exists(temp_txt_path):
+                os.remove(temp_txt_path)
         else:
-            print(f"⚠️ File TXT tidak ditemukan di {source_txt_path}. API mungkin gagal mengekstrak teks.")
+             print(f"⚠️ File TXT tidak ditemukan.")
 
         return db_pdf_path, db_txt_path
