@@ -28,10 +28,10 @@ __pycache__/
 
 # --- Input/Output and Temporary Files ---
 # Ignore uploaded files, processed results, and temporary files
-/input_files/
-/output_files/
-temp_page_*.png
-*.log
+# /input_files/
+# /output_files/
+# temp_page_*.png
+# *.log
 
 # --- OS-specific files ---
 # Mac
