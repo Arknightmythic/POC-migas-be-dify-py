@@ -34,11 +34,14 @@ class DocumentProcessorHandler:
         if extension.lower() == '.pdf':
             try:
                 print(f"PDF detected. Forwarding to external extract-pdf API as '{api_filename}'...")
+                extract_mode = os.getenv("PDF_EXTRACT_MODE", "page")
 
                 with open(input_path, "rb") as f:
                     response = requests.post(
-                        "http://103.67.43.152/ocr/extract-pdf",
+                        # "http://103.67.43.152/ocr/extract-pdf",
+                        "http://localhost:8100/extract-pdf",
                         # Gunakan api_filename di sini agar server menerima nama file asli
+                        data={"mode": extract_mode},
                         files={"file": (api_filename, f, "application/pdf")}
                     )
 
