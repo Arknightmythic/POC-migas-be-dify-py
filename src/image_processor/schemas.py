@@ -11,3 +11,4 @@ class StatusUpdatePayload(BaseModel):
     file_path: str | None = None
     raw_image_path: str | None = None # Tambahkan field ini
     category: str | None = "general"
+    docx_path: str | None = None  # Tambahkan field ini untuk file Word

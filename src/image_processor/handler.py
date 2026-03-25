@@ -2,24 +2,25 @@
 import os
 import httpx
 from uuid import UUID
+from pathlib import Path
 from fastapi import UploadFile, HTTPException
 
 # Menggunakan kembali logic konversi dari doc_processor
 from ..doc_processor import utils as OcrUtils
 
+# IMPORT PIPELINE BARU (tanpa memodifikasi kode aslinya)
+from .doc_ocr_pipeline import run_pipeline
+
 class ImageProcessorHandler:
     def __init__(self):
-        # Direktori sementara di dalam AI service
         self.temp_dir = "image_processor_temp"
         os.makedirs(self.temp_dir, exist_ok=True)
         
         self.MAIN_API_BASE_URL = os.getenv("MAIN_API_BASE_URL")
-        # URL Callback ke backend utama dari .env
         self.callback_url = os.getenv("IMAGE_EXTRACTION_CALLBACK_URL")
         print("ImageProcessorHandler Initialized")
 
     async def notify_main_api(self, payload: dict):
-        """Kirim status kembali ke API Utama."""
         if not self.callback_url:
             print("⚠️ IMAGE_EXTRACTION_CALLBACK_URL not set. Cannot send status update.")
             return
@@ -52,58 +53,91 @@ class ImageProcessorHandler:
 
     async def convert_image_to_pdf(self, temp_input_path: str, original_filename: str, document_id: UUID):
         raw_image_db_path = None
+        docx_db_path = None # Variabel untuk menyimpan path DOCX
+        
         try:
-           # 1. Upload Raw Image ke Main BE (Ganti shutil.copy)
-            # Kita perlu kategori 'raw_images' di Main BE handler
+            # 1. Upload Raw Image ke Main BE
             raw_image_db_path = await self.upload_file_to_main_be(temp_input_path, "raw_images")
             print(f"✅ Raw image uploaded: {raw_image_db_path}")
 
-            # 2. Ekstrak teks (Logic OcrUtils tetap sama karena baca file temp lokal)
+            # 2. Ekstrak teks dengan Gemini
             text_content = OcrUtils.extract_text_with_gemini_vision(temp_input_path)
             if not text_content: raise ValueError("Text extraction failed.")
 
-            # 3. Klasifikasi
+            # 3. Klasifikasi (General, Administrative, dll)
             category = OcrUtils.classify_image_content(original_filename, text_content)
 
-            # 4. Buat PDF di folder TEMP lokal AI Service
+            # 4. Buat PDF (Tetap jalan sebagai file default)
             base_name, _ = os.path.splitext(original_filename)
             output_filename = f"{base_name}.pdf"
-            temp_pdf_path = os.path.join(self.temp_dir, output_filename) # Simpan di temp lokal dulu
+            temp_pdf_path = os.path.join(self.temp_dir, output_filename)
             
             OcrUtils.create_searchable_pdf(text_content, temp_pdf_path)
-            
-            # 5. Upload PDF ke Main BE
-            # Tentukan kategori folder berdasarkan hasil klasifikasi
-            # Jika 'general', mungkin masuk ke 'legal' atau folder khusus 'extract_results'
-            # Di Main BE handler folder_map perlu disesuaikan jika ingin dinamis. 
-            # Untuk simplifikasi, kita masukkan ke 'legal' saja atau buat logic mapping di Main BE.
-            
-            # Kita pakai 'legal' untuk semua hasil PDF image extraction agar konsisten
             pdf_db_path = await self.upload_file_to_main_be(temp_pdf_path, "legal") 
 
-            # 6. Kirim Callback
+            # -------------------------------------------------------------
+            # 5. INTEGRASI: JIKA ADMINISTRATIVE, JALANKAN DOCX PIPELINE
+            # -------------------------------------------------------------
+            if category == "administrative":
+                print(f"📄 Format Administrative terdeteksi! Menjalankan Ollama DOCX Pipeline untuk {original_filename}...")
+                
+                html_output = os.path.join(self.temp_dir, f"{base_name}.html")
+                try:
+                    # Jalankan fungsi utama dari file doc_ocr_pipeline.py
+                    pipeline_result = run_pipeline(
+                        image_path=temp_input_path,
+                        output_path=html_output,
+                        save_prompt=False,
+                        wrap_page=True,
+                        make_docx=True
+                    )
+                    
+                    generated_docx = pipeline_result.get("docx_path")
+                    if generated_docx and os.path.exists(generated_docx):
+                        # Upload file DOCX ke Main BE
+                        docx_db_path = await self.upload_file_to_main_be(generated_docx, "administrative_docs")
+                        print(f"✅ DOCX berhasil diunggah: {docx_db_path}")
+                        
+                        # Cleanup file output pipeline (HTML dan DOCX)
+                        os.remove(generated_docx)
+                        if os.path.exists(html_output): os.remove(html_output)
+                        
+                        # Karena script doc_ocr_pipeline membuat file '_analysis.json' dan '_logo.png' 
+                        # di current working directory, kita bersihkan agar folder tidak kotor
+                        stem = Path(temp_input_path).stem
+                        cwd = os.getcwd()
+                        for suffix in ["_analysis.json", "_logo.png"]:
+                            temp_artifact = os.path.join(cwd, f"{stem}{suffix}")
+                            if os.path.exists(temp_artifact):
+                                os.remove(temp_artifact)
+
+                except Exception as e:
+                    print(f"❌ DOCX Pipeline gagal (fallback ke PDF saja): {e}")
+            # -------------------------------------------------------------
+
+            # 6. Kirim Callback (Kirim data pdf_db_path DAN docx_db_path)
             payload = {
                 "document_id": str(document_id),
                 "status": "completed",
                 "file_path": pdf_db_path,
                 "raw_image_path": raw_image_db_path,
-                "category": category
+                "category": category,
+                "docx_path": docx_db_path # Akan berisi URL jika sukses, None jika gagal/bukan administrative
             }
             await self.notify_main_api(payload)
             
             # Cleanup local temp PDF
             if os.path.exists(temp_pdf_path): os.remove(temp_pdf_path)
-            
 
         except Exception as e:
             print(f"❌ Conversion failed for {original_filename}: {e}")
-            # Kirim callback gagal
             payload = {
                 "document_id": str(document_id), 
                 "status": "failed", 
                 "file_path": None,
-                "raw_image_path": raw_image_db_path, # Kirim path gambar mentah jika sudah tersimpan
-                "category": "general"
+                "raw_image_path": raw_image_db_path,
+                "category": "general",
+                "docx_path": None
             }
             await self.notify_main_api(payload)
         finally:
