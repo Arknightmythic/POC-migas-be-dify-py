@@ -9,7 +9,13 @@ from fastapi import UploadFile, HTTPException
 from ..doc_processor import utils as OcrUtils
 
 # IMPORT PIPELINE BARU (tanpa memodifikasi kode aslinya)
-from .doc_ocr_pipeline import run_pipeline
+from .doc_ocr_pipeline import run_pipeline as run_digital_pipeline
+
+try:
+    from .handwritten_pipeline import run_pipeline as run_handwritten_pipeline
+except ImportError:
+    print("⚠️ Module handwritten_pipeline.py belum tersedia.")
+    run_handwritten_pipeline = None
 
 class ImageProcessorHandler:
     def __init__(self):
@@ -53,7 +59,7 @@ class ImageProcessorHandler:
 
     async def convert_image_to_pdf(self, temp_input_path: str, original_filename: str, document_id: UUID):
         raw_image_db_path = None
-        docx_db_path = None # Variabel untuk menyimpan path DOCX
+        docx_db_path = None 
         
         try:
             # 1. Upload Raw Image ke Main BE
@@ -76,15 +82,26 @@ class ImageProcessorHandler:
             pdf_db_path = await self.upload_file_to_main_be(temp_pdf_path, "legal") 
 
             # -------------------------------------------------------------
-            # 5. INTEGRASI: JIKA ADMINISTRATIVE, JALANKAN DOCX PIPELINE
+            # 5. INTEGRASI: JIKA ADMINISTRATIVE, PILIH PIPELINE
             # -------------------------------------------------------------
             if category == "administrative":
-                print(f"📄 Format Administrative terdeteksi! Menjalankan Ollama DOCX Pipeline untuk {original_filename}...")
+                print(f"📄 Format Administrative terdeteksi untuk {original_filename}!")
+                
+                # --- LOGIKA BARU: Cek Tulisan Tangan vs Digital ---
+                hw_status = OcrUtils.classify_handwritten_status(temp_input_path)
+                
+                if hw_status == "handwritten" and run_handwritten_pipeline:
+                    print(f"✍️ Tipe Handwritten terdeteksi! Menjalankan Handwritten Pipeline...")
+                    selected_pipeline = run_handwritten_pipeline
+                else:
+                    print(f"🖨️ Tipe Digital terdeteksi! Menjalankan Digital Pipeline...")
+                    selected_pipeline = run_digital_pipeline
+                # -----------------------------------------------------------
                 
                 html_output = os.path.join(self.temp_dir, f"{base_name}.html")
                 try:
-                    # Jalankan fungsi utama dari file doc_ocr_pipeline.py
-                    pipeline_result = run_pipeline(
+                    # Jalankan fungsi utama dari pipeline yang terpilih secara dinamis
+                    pipeline_result = selected_pipeline(
                         image_path=temp_input_path,
                         output_path=html_output,
                         save_prompt=False,
@@ -102,8 +119,7 @@ class ImageProcessorHandler:
                         os.remove(generated_docx)
                         if os.path.exists(html_output): os.remove(html_output)
                         
-                        # Karena script doc_ocr_pipeline membuat file '_analysis.json' dan '_logo.png' 
-                        # di current working directory, kita bersihkan agar folder tidak kotor
+                        # Cleanup Artifacts
                         stem = Path(temp_input_path).stem
                         cwd = os.getcwd()
                         for suffix in ["_analysis.json", "_logo.png"]:
@@ -115,14 +131,14 @@ class ImageProcessorHandler:
                     print(f"❌ DOCX Pipeline gagal (fallback ke PDF saja): {e}")
             # -------------------------------------------------------------
 
-            # 6. Kirim Callback (Kirim data pdf_db_path DAN docx_db_path)
+            # 6. Kirim Callback (Sisa kodenya tetap sama seperti sebelumnya)
             payload = {
                 "document_id": str(document_id),
                 "status": "completed",
                 "file_path": pdf_db_path,
                 "raw_image_path": raw_image_db_path,
                 "category": category,
-                "docx_path": docx_db_path # Akan berisi URL jika sukses, None jika gagal/bukan administrative
+                "docx_path": docx_db_path 
             }
             await self.notify_main_api(payload)
             

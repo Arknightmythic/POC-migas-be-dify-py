@@ -192,3 +192,67 @@ def classify_image_content(filename: str, text_content: str) -> str:
     except Exception as e:
         print(f"❌ Error during classification: {e}. Defaulting to 'general'.")
         return "general"
+
+
+# Tambahkan fungsi ini di bawah fungsi classify_image_content yang sudah ada
+
+def classify_handwritten_status(image_path: str) -> str:
+    """
+    Menggunakan Gemini Vision untuk mendeteksi apakah dokumen didominasi oleh
+    tulisan tangan (handwritten) atau cetak digital (digital).
+    """
+    if not GEMINI_API_KEY or not GEMINI_MODEL:
+        print("⚠️ Gemini API details not set. Defaulting to 'digital'.")
+        return "digital"
+
+    base64_image = image_to_base64(image_path)
+    if not base64_image:
+        return "digital"
+    
+    mime_type, _ = mimetypes.guess_type(image_path)
+    if mime_type is None:
+        mime_type = 'image/png'
+
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        
+        # --- PROMPT YANG DIPERBARUI ---
+        prompt = """
+        You are an expert document analyst. Analyze the provided image and classify its primary content type into exactly one of two categories: 'handwritten' or 'digital'.
+
+        Follow these strict rules for classification:
+        1. Classify as 'handwritten' if the MAIN SUBSTANCE or the MAJORITY of the data in the document is written by human hand (e.g., pen/pencil on lined paper, hand-drawn tables, handwritten notes/letters).
+        2. If the document is a printed template/form BUT the core data fields are filled out with handwriting, classify it as 'handwritten'.
+        3. Classify as 'digital' ONLY if the document is primarily typewritten/printed using computer fonts (e.g., standard official letters, digital invoices, printed reports) and any handwriting is minimal (like just a single signature or a tiny date at the bottom).
+        
+        CRITICAL: Respond with EXACTLY ONE WORD. Either 'handwritten' or 'digital'. Do not add any punctuation, explanation, or extra text.
+        """
+        # -----------------------------
+        
+        image_part = {
+            "mime_type": mime_type,
+            "data": base64_image
+        }
+        
+        print(f"🔬 Classifying handwritten status for: {os.path.basename(image_path)}")
+        
+        # Tambahkan temperature rendah (0.1) agar LLM menjawab dengan lebih deterministik/konsisten
+        generation_config = genai.types.GenerationConfig(temperature=0.1)
+        response = model.generate_content([prompt, image_part], generation_config=generation_config)
+        
+        result = response.text.strip().lower()
+        # Bersihkan dari kemungkinan karakter tak terlihat/tanda baca yang nyasar
+        import re
+        result = re.sub(r'[^a-z]', '', result)
+        
+        if "handwritten" in result:
+            print("✅ Classified as: handwritten")
+            return "handwritten"
+        else:
+            print("✅ Classified as: digital")
+            return "digital"
+            
+    except Exception as e:
+        print(f"❌ Error during handwritten classification: {e}. Defaulting to 'digital'.")
+        return "digital"
