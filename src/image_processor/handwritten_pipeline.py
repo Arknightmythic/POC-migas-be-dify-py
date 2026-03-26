@@ -95,18 +95,22 @@ def _tight_crop_by_content(img: np.ndarray, min_pad: int = 4) -> np.ndarray:
 
 
 PHASE1_SYSTEM = (
-    "You are a document layout analyst. "
+    "You are an expert document and handwriting analyst specializing in OCR and digital conversion of both printed and handwritten documents. "
     "Inspect the document image and return ONLY a valid JSON object. "
     "No prose, no markdown fences, no comments."
 )
 
 PHASE1_USER = """/no_think
 Carefully examine EVERY region of this document image — top to bottom, left to right.
+Determine if the document is a clean digital file, a scan of a printed document, or a handwritten note.
 Return a single JSON object with EXACTLY these keys.
 Output ONLY the JSON. Do NOT add comments or extra text.
 
 {
-    "document_type": "memo_dinas|surat_resmi|surat_perintah|sk|invoice|form|report|table_only|mixed",
+    "document_type": "memo_dinas|surat_resmi|surat_perintah|sk|invoice|form|report|table_only|mixed|handwritten_note",
+    "is_handwritten": true|false,
+    "handwriting_style": "cursive|block|mixed|none",
+    "is_scanned_image": true|false,
     "language": "Indonesian|English|mixed",
 
     "header_layout": "text_only|none",
@@ -119,6 +123,7 @@ Output ONLY the JSON. Do NOT add comments or extra text.
     "key_value_label_examples": ["Menimbang", "Mengingat"],
 
     "has_data_table": false,
+    "has_hand_drawn_table": false,
     "table_has_merged_cells": false,
 
     "has_numbered_list": false,
@@ -145,7 +150,7 @@ Output ONLY the JSON. Do NOT add comments or extra text.
     "has_underlined_text": false,
 
     "heading_levels": 1,
-    "font_style": "serif|sans-serif|monospace|mixed",
+    "font_style": "serif|sans-serif|monospace|mixed|handwritten",
     "complexity": "simple|moderate|complex"
 }
 
@@ -204,6 +209,11 @@ def phase15_validate(doc: dict, image_b64: str) -> dict:
             "Q5: Does the data table have any merged cells? For example, a column header that spans across multiple columns (like a title over several dates), or a row header that spans multiple rows vertically. Answer: yes or no."
         )
 
+    if not doc.get("is_handwritten"):
+        questions.append(
+            "Q6: Does this document contain ANY handwritten text, signatures, or annotations? Answer: yes or no."
+        )
+
     if not questions:
         print("[Phase 1.5] No corrections needed.")
         return doc
@@ -237,6 +247,8 @@ def phase15_validate(doc: dict, image_b64: str) -> dict:
             corrections["has_nested_key_value"] = True
         elif "Q5" in q_text and is_yes:
             corrections["table_has_merged_cells"] = True
+        elif "Q6" in q_text and is_yes:
+            corrections["is_handwritten"] = True
 
     if corrections:
         print(f"[Phase 1.5] Corrections applied: {corrections}")
@@ -479,6 +491,27 @@ def build_extraction_prompt(doc: dict) -> str:
 {multiline}{nested}
 EXAMPLE ({ex_label}):
 {ex_html}
+"""
+        )
+
+    if doc.get("is_handwritten"):
+        rules.append(
+            f"""\
+## HANDWRITING RECOGNITION & EXTRACTION
+- This document contains HANDWRITTEN text ({doc.get('handwriting_style', 'mixed')} style).
+- Be extremely precise in deciphering it. If the script is cursive, use surrounding context to resolve ambiguous characters.
+- If a word is truly illegible, represent it with [?] or your best phonetic guess.
+- Maintain the visual placement of handwritten text even if it doesn't align perfectly with a grid.
+- If there are handwritten annotations or notes in the margins, include them in the relevant part of the document using <p> or <div>.
+"""
+        )
+
+    if doc.get("has_hand_drawn_table"):
+        rules.append(
+            """\
+## HAND-DRAWN TABLES
+- Even if the table lines are wobbly, hand-drawn, or incomplete, extract the content into a proper HTML <table>.
+- Infer the number of rows and columns based on the content grouping and visual grid.
 """
         )
 
@@ -742,7 +775,6 @@ def wrap_html_page(body_html: str) -> str:
 # DOCX Conversion
 # ══════════════════════════════════════════════
 
-
 def convert_to_docx(html: str, docx_path: str) -> str:
     """Convert HTML string to .docx using html_to_docx module."""
     try:
@@ -763,7 +795,6 @@ def convert_to_docx(html: str, docx_path: str) -> str:
     out = html_to_docx(html, docx_path)
     print(f"[DOCX] OK  Saved → {out}")
     return out
-
 
 # ══════════════════════════════════════════════
 # Main pipeline

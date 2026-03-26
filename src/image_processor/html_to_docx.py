@@ -1,26 +1,3 @@
-"""
-html_to_docx.py  v3.0
-======================
-Convert an HTML document produced by the OCR pipeline into a .docx file.
-
-v3.0 — all bugs from v2 fixed:
-  BUG 1 — Unit confusion (EMU vs twips):
-    CONTENT was computed as EMU (from Twips objects), then passed into Twips()
-    again → 635× too large. Fix: CONTENT_TWP is plain-integer twips.
-    .width on cells uses Twips(n_twips). OOXML w:pos / w:left use n_twips directly.
-
-  BUG 2 — Whitespace runs from HTML indentation:
-    NavigableString '\n        1. Item' produced a run with leading newline + spaces.
-    Fix: normalize NavigableString text (collapse \n + surrounding whitespace).
-
-  BUG 3 — Duplicate nested-table rows:
-    find_all("tr") is recursive → found inner table <tr>s too.
-    Fix: iterate only direct-child rows.
-
-Dependencies:
-    pip install python-docx beautifulsoup4 lxml
-"""
-
 from __future__ import annotations
 
 import re

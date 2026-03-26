@@ -1,6 +1,8 @@
 import os
 import base64
 import fitz  # PyMuPDF
+import re
+import requests
 import google.generativeai as genai
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
@@ -16,10 +18,13 @@ import mimetypes # Tambahkan ini untuk mendeteksi tipe file gambar
 # Load environment variables from .env file
 load_dotenv()
 
-# --- PERUBAHAN DI SINI ---
-# Load configuration from environment variables
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL')
+
+# --- KONFIGURASI TOGGLE BARU ---
+CLASSIFICATION_PROVIDER = os.getenv('CLASSIFICATION_PROVIDER', 'gemini').lower()
+OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
+OLLAMA_VISION_MODEL = os.getenv('OLLAMA_VISION_MODEL', 'qwen3-vl:8b-instruct-bf16')
 
 # --- KEMBALIKAN FUNGSI INI ---
 def image_to_base64(image_path: str):
@@ -30,15 +35,42 @@ def image_to_base64(image_path: str):
     except Exception as e:
         print(f"Gagal mengubah gambar ke Base64: {e}")
         return None
+    
+def call_ollama_classification(prompt: str, base64_image: str = None) -> str:
+    """Helper untuk memanggil Ollama API (Text atau Vision)."""
+    # Tambahkan instruksi /no_think agar Qwen tidak mengeluarkan tag <think>
+    if "/no_think" not in prompt:
+        prompt = f"/no_think\n{prompt}"
+        
+    messages = [{"role": "user", "content": prompt}]
+    
+    # Jika ada gambar, sisipkan ke dalam request
+    if base64_image:
+        messages[0]["images"] = [base64_image]
 
-# --- UBAH FUNGSI INI UNTUK MENGGUNAKAN GEMINI DENGAN BASE64 ---
-def extract_text_with_gemini_vision(image_path: str):
-    """Mengirim gambar (sebagai Base64) ke model Gemini untuk ekstraksi teks."""
-    if not GEMINI_API_KEY or not GEMINI_MODEL:
-        error_msg = "Error: GEMINI_API_KEY atau GEMINI_MODEL environment variables tidak diatur. Silakan cek file .env Anda."
-        print(error_msg)
+    payload = {
+        "model": OLLAMA_VISION_MODEL,
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "temperature": 0.1 # Dibuat rendah agar hasilnya deterministik
+        }
+    }
+
+    try:
+        url = f"{OLLAMA_URL.rstrip('/')}/api/chat"
+        response = requests.post(url, json=payload, timeout=120)
+        response.raise_for_status()
+        result_text = response.json().get("message", {}).get("content", "").strip()
+        return result_text
+    except Exception as e:
+        print(f"❌ Error saat menghubungi Ollama: {e}")
         return ""
 
+# --- UBAH FUNGSI INI UNTUK MENDUKUNG TOGGLE OLLAMA/GEMINI ---
+def extract_text_with_gemini_vision(image_path: str):
+    """Mengirim gambar (sebagai Base64) ke model AI (Gemini atau Ollama) untuk ekstraksi teks."""
+    
     print(f"Mengubah {os.path.basename(image_path)} ke Base64...")
     base64_image = image_to_base64(image_path)
     if not base64_image:
@@ -50,35 +82,51 @@ def extract_text_with_gemini_vision(image_path: str):
         print(f"Tidak dapat mendeteksi tipe MIME untuk {image_path}. Menggunakan default 'image/png'.")
         mime_type = 'image/png'
 
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        
-        print(f"Menghubungi ({GEMINI_MODEL}) untuk mengekstrak teks dari gambar...")
-        
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        
-        prompt = """
-                Transcribe the text from this image with high accuracy. 
-                Rules:
-                1. Fix broken lines: If a sentence is broken across multiple lines in the image, join them into a single continuous line.
-                2. Preserve structure: Keep distinct paragraphs and numbered lists (1., 2., etc.) on separate lines.
-                3. Output format: Return clean text where each bullet point or paragraph is on its own line.
-                4. Do not include markdown code blocks (```).
-                """
+    prompt = """
+            Transcribe the text from this image with high accuracy. 
+            Rules:
+            1. Fix broken lines: If a sentence is broken across multiple lines in the image, join them into a single continuous line.
+            2. Preserve structure: Keep distinct paragraphs and numbered lists (1., 2., etc.) on separate lines.
+            3. Output format: Return clean text where each bullet point or paragraph is on its own line.
+            4. Do not include markdown code blocks (```).
+            """
 
-        # Buat payload konten sesuai format API Gemini
-        image_part = {
-            "mime_type": mime_type,
-            "data": base64_image
-        }
-        
-        response = model.generate_content([prompt, image_part])
-        
-        print("Ekstraksi teks dengan Gemini Vision berhasil.")
-        return response.text
-    except Exception as e:
-        print(f"Error saat menghubungi Gemini dengan gambar: {e}")
-        return ""
+    # --- JIKA TOGGLE MENGGUNAKAN OLLAMA ---
+    if CLASSIFICATION_PROVIDER == 'ollama':
+        print(f"Menghubungi Ollama ({OLLAMA_VISION_MODEL}) untuk mengekstrak teks OCR dari gambar...")
+        try:
+            # Gunakan helper yang sama dengan yang kita buat untuk klasifikasi
+            result = call_ollama_classification(prompt, base64_image)
+            print("Ekstraksi teks dengan Ollama Vision berhasil.")
+            return result
+        except Exception as e:
+            print(f"❌ Error saat menghubungi Ollama untuk OCR: {e}")
+            return ""
+
+    # --- JIKA TOGGLE MENGGUNAKAN GEMINI (FALLBACK) ---
+    else:
+        if not GEMINI_API_KEY or not GEMINI_MODEL:
+            error_msg = "Error: GEMINI_API_KEY atau GEMINI_MODEL environment variables tidak diatur. Silakan cek file .env Anda."
+            print(error_msg)
+            return ""
+
+        try:
+            genai.configure(api_key=GEMINI_API_KEY)
+            print(f"Menghubungi ({GEMINI_MODEL}) untuk mengekstrak teks dari gambar...")
+            
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            image_part = {
+                "mime_type": mime_type,
+                "data": base64_image
+            }
+            
+            response = model.generate_content([prompt, image_part])
+            
+            print("Ekstraksi teks dengan Gemini Vision berhasil.")
+            return response.text
+        except Exception as e:
+            print(f"❌ Error saat menghubungi Gemini dengan gambar: {e}")
+            return ""
 
 def is_pdf_scanned(file_path: str):
     """Detects if a PDF has no extractable text layer."""
@@ -148,63 +196,56 @@ def create_searchable_pdf(text_content: str, output_path: str):
     c.save()
     print(f"Searchable PDF successfully created at: {output_path}")
     
+# --- UPDATE FUNGSI CLASSIFY IMAGE CONTENT ---
 def classify_image_content(filename: str, text_content: str) -> str:
-    """
-    Mengklasifikasikan konten gambar berdasarkan nama file dan teks yang diekstrak.
-    Mengembalikan salah satu dari: 'administrative', 'medicine', 'parking', 'general'.
-    """
-    if not GEMINI_API_KEY or not GEMINI_MODEL:
-        print("⚠️ Gemini API details not set. Defaulting category to 'general'.")
-        return "general"
+    prompt = f"""
+    Analyze the following filename and its extracted text content. Classify it into one of these categories: administrative, medicine, parking.
+    - 'administrative' refers to documents like invoices, receipts, forms, letters, certificate, statement letter, or official documents.
+    - 'medicine' refers to prescriptions, drug labels, medical reports, or anything related to health.
+    - 'parking' refers to parking tickets, parking receipts, or signs related to parking.
 
+    If the content does not clearly fit into any of the above categories, classify it as 'general'.
+
+    Respond with ONLY the category name in lowercase and nothing else.
+
+    Filename: "{filename}"
+    Extracted Text: "{text_content[:1500]}..." 
+    """
+
+    print(f"🔬 Classifying content for: {filename} using [{CLASSIFICATION_PROVIDER.upper()}]")
+    
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        
-        prompt = f"""
-        Analyze the following filename and its extracted text content. Classify it into one of these categories: administrative, medicine, parking.
-        - 'administrative' refers to documents like invoices, receipts, forms, letters, certificate, statement letter, or official documents.
-        - 'medicine' refers to prescriptions, drug labels, medical reports, or anything related to health.
-        - 'parking' refers to parking tickets, parking receipts, or signs related to parking.
-
-        If the content does not clearly fit into any of the above categories, classify it as 'general'.
-
-        Respond with ONLY the category name in lowercase and nothing else.
-
-        Filename: "{filename}"
-        Extracted Text: "{text_content[:1500]}..." 
-        """ # Batasi teks untuk efisiensi
-
-        print(f"🔬 Classifying content for: {filename}")
-        response = model.generate_content(prompt)
-        
-        # Bersihkan respons untuk memastikan hanya kategori yang dikembalikan
-        category = response.text.strip().lower()
-        
-        # Validasi respons
-        if category in ["administrative", "medicine", "parking", "general"]:
-            print(f"✅ Classified as: {category}")
-            return category
+        if CLASSIFICATION_PROVIDER == 'ollama':
+            raw_result = call_ollama_classification(prompt)
         else:
-            print(f"⚠️ LLM returned an invalid category ('{category}'). Defaulting to 'general'.")
-            return "general"
-            
+            # Fallback ke Gemini
+            if not GEMINI_API_KEY or not GEMINI_MODEL:
+                print("⚠️ Gemini API details not set. Defaulting to 'general'.")
+                return "general"
+            genai.configure(api_key=GEMINI_API_KEY)
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            response = model.generate_content(prompt)
+            raw_result = response.text
+
+        # Bersihkan hasil
+        category = raw_result.strip().lower()
+        category = re.sub(r'[^a-z]', '', category) # Bersihkan karakter aneh
+        
+        # Validasi
+        for valid_cat in ["administrative", "medicine", "parking"]:
+            if valid_cat in category:
+                print(f"✅ Classified as: {valid_cat}")
+                return valid_cat
+                
+        print(f"⚠️ Classified as 'general' (Result was: {category})")
+        return "general"
+        
     except Exception as e:
         print(f"❌ Error during classification: {e}. Defaulting to 'general'.")
         return "general"
 
-
-# Tambahkan fungsi ini di bawah fungsi classify_image_content yang sudah ada
-
+# --- UPDATE FUNGSI CLASSIFY HANDWRITTEN STATUS ---
 def classify_handwritten_status(image_path: str) -> str:
-    """
-    Menggunakan Gemini Vision untuk mendeteksi apakah dokumen didominasi oleh
-    tulisan tangan (handwritten) atau cetak digital (digital).
-    """
-    if not GEMINI_API_KEY or not GEMINI_MODEL:
-        print("⚠️ Gemini API details not set. Defaulting to 'digital'.")
-        return "digital"
-
     base64_image = image_to_base64(image_path)
     if not base64_image:
         return "digital"
@@ -213,37 +254,36 @@ def classify_handwritten_status(image_path: str) -> str:
     if mime_type is None:
         mime_type = 'image/png'
 
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        
-        # --- PROMPT YANG DIPERBARUI ---
-        prompt = """
-        You are an expert document analyst. Analyze the provided image and classify its primary content type into exactly one of two categories: 'handwritten' or 'digital'.
+    prompt = """
+    You are an expert document analyst. Analyze the provided image and classify its primary content type into exactly one of two categories: 'handwritten' or 'digital'.
 
-        Follow these strict rules for classification:
-        1. Classify as 'handwritten' if the MAIN SUBSTANCE or the MAJORITY of the data in the document is written by human hand (e.g., pen/pencil on lined paper, hand-drawn tables, handwritten notes/letters).
-        2. If the document is a printed template/form BUT the core data fields are filled out with handwriting, classify it as 'handwritten'.
-        3. Classify as 'digital' ONLY if the document is primarily typewritten/printed using computer fonts (e.g., standard official letters, digital invoices, printed reports) and any handwriting is minimal (like just a single signature or a tiny date at the bottom).
-        
-        CRITICAL: Respond with EXACTLY ONE WORD. Either 'handwritten' or 'digital'. Do not add any punctuation, explanation, or extra text.
-        """
-        # -----------------------------
-        
-        image_part = {
-            "mime_type": mime_type,
-            "data": base64_image
-        }
-        
-        print(f"🔬 Classifying handwritten status for: {os.path.basename(image_path)}")
-        
-        # Tambahkan temperature rendah (0.1) agar LLM menjawab dengan lebih deterministik/konsisten
-        generation_config = genai.types.GenerationConfig(temperature=0.1)
-        response = model.generate_content([prompt, image_part], generation_config=generation_config)
-        
-        result = response.text.strip().lower()
+    Follow these strict rules for classification:
+    1. Classify as 'handwritten' if the MAIN SUBSTANCE or the MAJORITY of the data in the document is written by human hand (e.g., pen/pencil on lined paper, hand-drawn tables, handwritten notes/letters).
+    2. If the document is a printed template/form BUT the core data fields are filled out with handwriting, classify it as 'handwritten'.
+    3. Classify as 'digital' ONLY if the document is primarily typewritten/printed using computer fonts (e.g., standard official letters, digital invoices, printed reports) and any handwriting is minimal (like just a single signature or a tiny date at the bottom).
+    
+    CRITICAL: Respond with EXACTLY ONE WORD. Either 'handwritten' or 'digital'. Do not add any punctuation, explanation, or extra text.
+    """
+
+    print(f"🔬 Classifying handwritten status for: {os.path.basename(image_path)} using [{CLASSIFICATION_PROVIDER.upper()}]")
+
+    try:
+        if CLASSIFICATION_PROVIDER == 'ollama':
+            raw_result = call_ollama_classification(prompt, base64_image)
+        else:
+            # Fallback ke Gemini
+            if not GEMINI_API_KEY or not GEMINI_MODEL:
+                print("⚠️ Gemini API details not set. Defaulting to 'digital'.")
+                return "digital"
+            genai.configure(api_key=GEMINI_API_KEY)
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            image_part = {"mime_type": mime_type, "data": base64_image}
+            generation_config = genai.types.GenerationConfig(temperature=0.1)
+            response = model.generate_content([prompt, image_part], generation_config=generation_config)
+            raw_result = response.text
+
         # Bersihkan dari kemungkinan karakter tak terlihat/tanda baca yang nyasar
-        import re
+        result = raw_result.strip().lower()
         result = re.sub(r'[^a-z]', '', result)
         
         if "handwritten" in result:
