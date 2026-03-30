@@ -44,50 +44,53 @@ class ImageProcessorHandler:
         if not os.path.exists(file_path): return None
         url = f"{self.MAIN_API_BASE_URL}/api/sistem-documents/store-file"
         filename = os.path.basename(file_path)
+        # Saran: Gunakan timeout yang sedikit lebih panjang untuk mencegah error saat sistem under-load
         async with httpx.AsyncClient() as client:
             try:
                 with open(file_path, "rb") as f:
                     files = {"file": (filename, f)}
                     data = {"folder_category": folder_category}
                     print(f"🚀 Uploading {filename} to Main BE...")
-                    response = await client.post(url, files=files, data=data, timeout=60)
+                    response = await client.post(url, files=files, data=data, timeout=120.0) # Naikkan ke 120s
                     response.raise_for_status()
                     return response.json().get('saved_path')
             except Exception as e:
-                print(f"❌ Upload failed: {e}")
-                return None        
+                # Gunakan repr(e) agar error kosong seperti ReadTimeout('') terlihat wujudnya
+                print(f"❌ Upload failed for {filename}: {repr(e)}") 
+                return None      
 
     async def convert_image_to_pdf(self, temp_input_path: str, original_filename: str, document_id: UUID):
         raw_image_db_path = None
         docx_db_path = None 
+        temp_pdf_path = None
+        html_output = None
+        generated_docx = None
+        
+        # PERBAIKAN: base_name kini unik per dokumen
+        base_name = f"{document_id}_{os.path.splitext(original_filename)[0]}"
+        stem = Path(temp_input_path).stem
         
         try:
             # 1. Upload Raw Image ke Main BE
             raw_image_db_path = await self.upload_file_to_main_be(temp_input_path, "raw_images")
             print(f"✅ Raw image uploaded: {raw_image_db_path}")
 
-            # 2. Ekstrak teks dengan Gemini
+            # 2. Ekstrak teks dengan Gemini/Ollama
             text_content = OcrUtils.extract_text_with_gemini_vision(temp_input_path)
             if not text_content: raise ValueError("Text extraction failed.")
 
-            # 3. Klasifikasi (General, Administrative, dll)
+            # 3. Klasifikasi
             category = OcrUtils.classify_image_content(original_filename, text_content)
 
-            # 4. Buat PDF (Tetap jalan sebagai file default)
-            base_name, _ = os.path.splitext(original_filename)
+            # 4. Buat PDF (Tidak ada redudansi baris lagi)
             output_filename = f"{base_name}.pdf"
             temp_pdf_path = os.path.join(self.temp_dir, output_filename)
-            
             OcrUtils.create_searchable_pdf(text_content, temp_pdf_path)
             pdf_db_path = await self.upload_file_to_main_be(temp_pdf_path, "legal") 
 
-            # -------------------------------------------------------------
-            # 5. INTEGRASI: JIKA ADMINISTRATIVE, PILIH PIPELINE
-            # -------------------------------------------------------------
+            # 5. INTEGRASI PIPELINE
             if category == "administrative":
                 print(f"📄 Format Administrative terdeteksi untuk {original_filename}!")
-                
-                # --- LOGIKA BARU: Cek Tulisan Tangan vs Digital ---
                 hw_status = OcrUtils.classify_handwritten_status(temp_input_path)
                 
                 if hw_status == "handwritten" and run_handwritten_pipeline:
@@ -96,42 +99,20 @@ class ImageProcessorHandler:
                 else:
                     print(f"🖨️ Tipe Digital terdeteksi! Menjalankan Digital Pipeline...")
                     selected_pipeline = run_digital_pipeline
-                # -----------------------------------------------------------
                 
                 html_output = os.path.join(self.temp_dir, f"{base_name}.html")
-                try:
-                    # Jalankan fungsi utama dari pipeline yang terpilih secara dinamis
-                    pipeline_result = selected_pipeline(
-                        image_path=temp_input_path,
-                        output_path=html_output,
-                        save_prompt=False,
-                        wrap_page=True,
-                        make_docx=True
-                    )
-                    
-                    generated_docx = pipeline_result.get("docx_path")
-                    if generated_docx and os.path.exists(generated_docx):
-                        # Upload file DOCX ke Main BE
-                        docx_db_path = await self.upload_file_to_main_be(generated_docx, "administrative_docs")
-                        print(f"✅ DOCX berhasil diunggah: {docx_db_path}")
-                        
-                        # Cleanup file output pipeline (HTML dan DOCX)
-                        os.remove(generated_docx)
-                        if os.path.exists(html_output): os.remove(html_output)
-                        
-                        # Cleanup Artifacts
-                        stem = Path(temp_input_path).stem
-                        cwd = os.getcwd()
-                        for suffix in ["_analysis.json", "_logo.png"]:
-                            temp_artifact = os.path.join(cwd, f"{stem}{suffix}")
-                            if os.path.exists(temp_artifact):
-                                os.remove(temp_artifact)
+                pipeline_result = selected_pipeline(
+                    image_path=temp_input_path,
+                    output_path=html_output,
+                    save_prompt=False,
+                    wrap_page=True,
+                    make_docx=True
+                )
+                generated_docx = pipeline_result.get("docx_path")
+                if generated_docx and os.path.exists(generated_docx):
+                    docx_db_path = await self.upload_file_to_main_be(generated_docx, "administrative_docs")
 
-                except Exception as e:
-                    print(f"❌ DOCX Pipeline gagal (fallback ke PDF saja): {e}")
-            # -------------------------------------------------------------
-
-            # 6. Kirim Callback (Sisa kodenya tetap sama seperti sebelumnya)
+            # 6. Kirim Callback
             payload = {
                 "document_id": str(document_id),
                 "status": "completed",
@@ -141,12 +122,9 @@ class ImageProcessorHandler:
                 "docx_path": docx_db_path 
             }
             await self.notify_main_api(payload)
-            
-            # Cleanup local temp PDF
-            if os.path.exists(temp_pdf_path): os.remove(temp_pdf_path)
 
         except Exception as e:
-            print(f"❌ Conversion failed for {original_filename}: {e}")
+            print(f"❌ Conversion failed for {original_filename}: {repr(e)}")
             payload = {
                 "document_id": str(document_id), 
                 "status": "failed", 
@@ -156,6 +134,21 @@ class ImageProcessorHandler:
                 "docx_path": None
             }
             await self.notify_main_api(payload)
+            
         finally:
-            if os.path.exists(temp_input_path):
-                os.remove(temp_input_path)
+            # 🧹 PERBAIKAN CLEANUP: Hapus file temporary dengan alamat yang benar
+            files_to_remove = [
+                temp_input_path, 
+                temp_pdf_path, 
+                html_output, 
+                generated_docx,
+                os.path.join(self.temp_dir, f"{stem}_analysis.json"), # Memperbaiki os.getcwd()
+                os.path.join(self.temp_dir, f"{stem}_logo.png")       # Memperbaiki os.getcwd()
+            ]
+            
+            for file_path in files_to_remove:
+                if file_path and os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                    except Exception as cleanup_err:
+                        print(f"⚠️ Failed to clean up {file_path}: {cleanup_err}")

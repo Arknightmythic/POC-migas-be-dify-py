@@ -39,7 +39,8 @@ import requests
 # ──────────────────────────────────────────────
 # Config
 # ──────────────────────────────────────────────
-OLLAMA_URL  = "http://10.1.237.104:11434/api/chat"
+# OLLAMA_URL  = "http://10.1.237.104:11434/api/chat"
+OLLAMA_URL  = "http://103.67.43.152/ollama2/api/chat"
 MODEL       = "qwen3-vl:8b-instruct-bf16"
 TEMPERATURE = 0.1
 MAX_TOKENS  = 6000
@@ -970,11 +971,12 @@ def run_pipeline(
     doc = phase15_validate(doc, image_b64)
     print("\n[Phase 1.5] Final analysis:")
     print(json.dumps(doc, indent=2, ensure_ascii=False))
+    parent_dir = Path(image_path).parent # Ambil direktori temp_dir
 
     stem = Path(image_path).stem
     doc["logo_local_path"] = ""
     if doc.get("has_logo"):
-        logo_file = stem + "_logo.png"
+        logo_file = str(parent_dir / f"{stem}_logo.png")
         # Panggil crop_logo_with_llm dengan image_b64
         doc["logo_local_path"] = crop_logo_with_llm(image_b64, image_path, output_path=logo_file)
     # -------------------------------------------
@@ -997,10 +999,11 @@ def run_pipeline(
     final_html = wrap_html_page(html_body) if wrap_page else html_body
 
     # Determine output paths
+    parent_dir = Path(image_path).parent
     stem        = Path(image_path).stem
     html_out    = output_path or (stem + "_output.html")
     docx_out    = str(Path(html_out).with_suffix(".docx"))
-    analysis_out = stem + "_analysis.json"
+    analysis_out = str(parent_dir / f"{stem}_analysis.json")
 
     # Save HTML
     Path(html_out).write_text(final_html, encoding="utf-8")
