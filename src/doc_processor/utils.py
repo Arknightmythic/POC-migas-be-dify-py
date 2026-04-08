@@ -14,12 +14,16 @@ from reportlab.lib.styles import getSampleStyleSheet
 from docx2pdf import convert
 from dotenv import load_dotenv
 import mimetypes # Tambahkan ini untuk mendeteksi tipe file gambar
+from openai import OpenAI
 
 # Load environment variables from .env file
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL')
+
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
 
 # --- KONFIGURASI TOGGLE BARU ---
 CLASSIFICATION_PROVIDER = os.getenv('CLASSIFICATION_PROVIDER', 'gemini').lower()
@@ -35,6 +39,37 @@ def image_to_base64(image_path: str):
     except Exception as e:
         print(f"Gagal mengubah gambar ke Base64: {e}")
         return None
+    
+def call_openai_vision_or_text(prompt: str, base64_image: str = None, mime_type: str = 'image/png') -> str:
+    if not OPENAI_API_KEY:
+        print("⚠️ OPENAI_API_KEY tidak ditemukan!")
+        return ""
+        
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    
+    # Format messages standard
+    messages = [{"role": "user", "content": []}]
+    messages[0]["content"].append({"type": "text", "text": prompt})
+    
+    # Jika ada gambar, tambahkan objek image_url
+    if base64_image:
+        messages[0]["content"].append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{mime_type};base64,{base64_image}"
+            }
+        })
+
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            temperature=0.1
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"❌ Error saat menghubungi OpenAI: {e}")
+        return ""
     
 def call_ollama_classification(prompt: str, base64_image: str = None) -> str:
     """Helper untuk memanggil Ollama API (Text atau Vision)."""
@@ -92,7 +127,11 @@ def extract_text_with_gemini_vision(image_path: str):
             """
 
     # --- JIKA TOGGLE MENGGUNAKAN OLLAMA ---
-    if CLASSIFICATION_PROVIDER == 'ollama':
+    if CLASSIFICATION_PROVIDER == 'openai':
+        print(f"Menghubungi OpenAI ({OPENAI_MODEL}) untuk OCR...")
+        return call_openai_vision_or_text(prompt, base64_image, mime_type)
+    
+    elif CLASSIFICATION_PROVIDER == 'ollama':
         print(f"Menghubungi Ollama ({OLLAMA_VISION_MODEL}) untuk mengekstrak teks OCR dari gambar...")
         try:
             # Gunakan helper yang sama dengan yang kita buat untuk klasifikasi
@@ -102,6 +141,7 @@ def extract_text_with_gemini_vision(image_path: str):
         except Exception as e:
             print(f"❌ Error saat menghubungi Ollama untuk OCR: {e}")
             return ""
+    
 
     # --- JIKA TOGGLE MENGGUNAKAN GEMINI (FALLBACK) ---
     else:
@@ -215,7 +255,9 @@ def classify_image_content(filename: str, text_content: str) -> str:
     print(f"🔬 Classifying content for: {filename} using [{CLASSIFICATION_PROVIDER.upper()}]")
     
     try:
-        if CLASSIFICATION_PROVIDER == 'ollama':
+        if CLASSIFICATION_PROVIDER == 'openai':
+            raw_result = call_openai_vision_or_text(prompt)
+        elif CLASSIFICATION_PROVIDER == 'ollama':
             raw_result = call_ollama_classification(prompt)
         else:
             # Fallback ke Gemini
@@ -268,7 +310,9 @@ def classify_handwritten_status(image_path: str) -> str:
     print(f"🔬 Classifying handwritten status for: {os.path.basename(image_path)} using [{CLASSIFICATION_PROVIDER.upper()}]")
 
     try:
-        if CLASSIFICATION_PROVIDER == 'ollama':
+        if CLASSIFICATION_PROVIDER == 'openai':
+            raw_result = call_openai_vision_or_text(prompt, base64_image, mime_type)
+        elif CLASSIFICATION_PROVIDER == 'ollama':
             raw_result = call_ollama_classification(prompt, base64_image)
         else:
             # Fallback ke Gemini

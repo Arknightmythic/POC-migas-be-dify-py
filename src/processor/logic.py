@@ -14,11 +14,18 @@ class AIServiceLogic:
         # Inisialisasi handler OCR
         self.ocr_handler = OcrHandler()
         
-        # Inisialisasi komponen untuk Dify
+       # --- PERUBAHAN: Setup LLM Dinamis ---
+        self.llm_provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+        
+        api_key = os.getenv("OPENAI_API_KEY") if self.llm_provider == "openai" else os.getenv("GEMINI_API_KEY")
+        model_name = os.getenv("OPENAI_MODEL") if self.llm_provider == "openai" else os.getenv("GEMINI_MODEL")
+        embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL") if self.llm_provider == "openai" else os.getenv("GEMINI_EMBEDDING_MODEL")
+
         self.dify_llm = LLM(
-            gemini_api_key=os.getenv("GEMINI_API_KEY"),
-            gemini_model=os.getenv("GEMINI_MODEL"),
-            embedding_model=os.getenv("GEMINI_EMBEDDING_MODEL")
+            provider=self.llm_provider,
+            api_key=api_key,
+            model_name=model_name,
+            embedding_model=embedding_model
         )
 
         separator = os.getenv("DIFY_SEPARATOR", "=== Halaman")

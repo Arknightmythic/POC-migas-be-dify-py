@@ -33,20 +33,20 @@ class DocumentProcessorHandler:
 
         if extension.lower() == '.pdf':
             try:
-                print(f"PDF detected. Forwarding to external extract-pdf API as '{api_filename}'...")
-                extract_mode = os.getenv("PDF_EXTRACT_MODE", "page")
+                print(f"PDF detected. Forwarding to Extractor & Chunker API as '{api_filename}'...")
+                
+                # Sesuaikan URL dan Port dengan tempat API baru kamu berjalan
+                api_url = "http://127.0.0.1:8000/extract"
 
                 with open(input_path, "rb") as f:
                     response = requests.post(
-                        # "http://103.67.43.152/ocr/extract-pdf",
-                        "http://localhost:8100/extract-pdf",
-                        # Gunakan api_filename di sini agar server menerima nama file asli
-                        data={"mode": extract_mode},
+                        api_url,
+                        # Parameter "mode" dihapus karena sudah dihandle oleh .env di server API
                         files={"file": (api_filename, f, "application/pdf")}
                     )
 
                 if response.status_code != 200:
-                    print(f"extract-pdf API returned error: {response.text}")
+                    print(f"Extractor API returned error: {response.text}")
                     return
                 
                 # 1. Simpan PDF (Copy file asli ke output)
@@ -54,14 +54,17 @@ class DocumentProcessorHandler:
 
                 # 2. Ambil text dari JSON response dan simpan sebagai .txt
                 data = response.json()
-                cleaned_text = data.get("cleaned_text", "")
+                
+                # MENGUBAH KEY RESPONSE:
+                # Menyesuaikan dengan key dari FastAPI kita yang baru
+                cleaned_text = data.get("hasil_ekstraksi", "")
                 
                 if cleaned_text:
                     with open(output_txt_path, "w", encoding="utf-8") as f:
                         f.write(cleaned_text)
-                    print(f"Text extracted and saved to: {output_txt_path}")
+                    print(f"Text extracted, chunked, and saved to: {output_txt_path}")
                 else:
-                    print("Warning: API returned empty 'cleaned_text'")
+                    print("Warning: API returned empty 'hasil_ekstraksi'")
 
             except Exception as e:
                 print(f"Error processing PDF via external API: {e}")
