@@ -36,7 +36,7 @@ class DocumentProcessorHandler:
                 print(f"PDF detected. Forwarding to Extractor & Chunker API as '{api_filename}'...")
                 
                 # Sesuaikan URL dan Port dengan tempat API baru kamu berjalan
-                api_url = "http://127.0.0.1:8000/extract"
+                api_url = "http://172.16.12.98:9781/extract"
 
                 with open(input_path, "rb") as f:
                     response = requests.post(
