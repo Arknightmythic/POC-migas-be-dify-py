@@ -64,7 +64,7 @@ def call_openai_vision_or_text(prompt: str, base64_image: str = None, mime_type:
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=messages,
-            temperature=0.1
+            # temperature=0.1
         )
         return response.choices[0].message.content.strip()
     except Exception as e:

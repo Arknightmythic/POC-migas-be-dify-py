@@ -33,15 +33,33 @@ from pathlib import Path
 import cv2
 import numpy as np
 import os
-
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ──────────────────────────────────────────────
 # Config
 # ──────────────────────────────────────────────
 # OLLAMA_URL  = "http://10.1.237.104:11434/api/chat"
-OLLAMA_URL  = "http://103.67.43.152/ollama2/api/chat"
-MODEL       = "qwen3-vl:8b-instruct-bf16"
+# OLLAMA_URL  = "http://103.67.43.152/ollama2/api/chat"
+# MODEL       = "qwen3-vl:8b-instruct-bf16"
+
+
+OCR_PROVIDER = os.getenv("OCR_PROVIDER", "ollama").lower()
+
+# Ollama Config
+OLLAMA_URL  = os.getenv("OCR_OLLAMA_URL", "http://103.67.43.152/ollama2/api/chat")
+OLLAMA_MODEL = os.getenv("OCR_OLLAMA_MODEL", "qwen3-vl:8b-instruct-bf16")
+
+# Gemini Config
+OCR_GEMINI_API_KEY = os.getenv("OCR_GEMINI_API_KEY", "")
+OCR_GEMINI_MODEL = os.getenv("OCR_GEMINI_MODEL", "gemini-2.5-flash")
+
+# OpenAI Config
+OCR_OPENAI_API_KEY = os.getenv("OCR_OPENAI_API_KEY", "")
+OCR_OPENAI_MODEL = os.getenv("OCR_OPENAI_MODEL", "gpt-4o-mini")
+
 TEMPERATURE = 0.1
 MAX_TOKENS  = 6000
 MAX_RETRIES = 2
@@ -55,10 +73,9 @@ def load_image_base64(path: str) -> str:
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
-
-def ollama_chat(messages: list, max_tokens: int = MAX_TOKENS) -> str:
+def _ollama_chat(messages: list, max_tokens: int) -> str:
     payload = {
-        "model":    MODEL,
+        "model":    OLLAMA_MODEL,
         "messages": messages,
         "stream":   False,
         "options":  {"temperature": TEMPERATURE, "top_p": 0.9, "num_predict": max_tokens},
@@ -71,6 +88,105 @@ def ollama_chat(messages: list, max_tokens: int = MAX_TOKENS) -> str:
         raise RuntimeError(f"Empty response from Ollama:\n{data}")
     return content
 
+def _openai_chat(messages: list, max_tokens: int) -> str:
+    from openai import OpenAI
+    if not OCR_OPENAI_API_KEY:
+        raise ValueError("OCR_OPENAI_API_KEY is not set in .env")
+    
+    client = OpenAI(api_key=OCR_OPENAI_API_KEY)
+    formatted_messages = []
+    
+    for msg in messages:
+        role = msg["role"]
+        content_text = msg["content"]
+        images = msg.get("images", [])
+
+        if not images:
+            formatted_messages.append({"role": role, "content": content_text})
+        else:
+            content_array = [{"type": "text", "text": content_text}]
+            for img_b64 in images:
+                content_array.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                })
+            formatted_messages.append({"role": role, "content": content_array})
+
+    response = client.chat.completions.create(
+        model=OCR_OPENAI_MODEL,
+        messages=formatted_messages,
+        # temperature=TEMPERATURE,
+        max_tokens=max_tokens,
+        # top_p=0.9
+    )
+    return response.choices[0].message.content.strip()
+
+def _gemini_chat(messages: list, max_tokens: int) -> str:
+    import google.generativeai as genai
+    if not OCR_GEMINI_API_KEY:
+        raise ValueError("OCR_GEMINI_API_KEY is not set in .env")
+    
+    genai.configure(api_key=OCR_GEMINI_API_KEY)
+    
+    system_instruction = None
+    user_parts = []
+    
+    for msg in messages:
+        if msg["role"] == "system":
+            system_instruction = msg["content"]
+        elif msg["role"] == "user":
+            user_parts.append(msg["content"])
+            for img_b64 in msg.get("images", []):
+                mime_type = "image/jpeg"
+                if img_b64.startswith("iVBORw0KGgo"):
+                    mime_type = "image/png"
+                elif img_b64.startswith("UklGR"):
+                    mime_type = "image/webp"
+
+                user_parts.append({
+                    "mime_type": mime_type,
+                    "data": img_b64
+                })
+    
+    kwargs = {"model_name": OCR_GEMINI_MODEL}
+    if system_instruction:
+        kwargs["system_instruction"] = system_instruction
+        
+    model = genai.GenerativeModel(**kwargs)
+    
+    # 💡 PERUBAHAN: Kita menghapus generation_config (max_tokens) 
+    # agar Gemini menggunakan limit output maksimal bawaannya (8192 token)
+    
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+
+    response = model.generate_content(
+        user_parts,
+        safety_settings=safety_settings
+    )
+    
+    try:
+        return response.text.strip()
+    except ValueError:
+        # Fallback jika gambar masih ditolak atau model gagal mengekstrak part
+        if response.candidates:
+            finish_reason = response.candidates[0].finish_reason
+            raise RuntimeError(f"Gemini terhenti. Finish Reason: {finish_reason}. (1=STOP, 2=MAX_TOKENS, 3=SAFETY, 4=RECITATION)")
+        else:
+            raise RuntimeError("Respon kosong atau diblokir oleh Gemini.")
+
+def vision_chat(messages: list, max_tokens: int = MAX_TOKENS) -> str:
+    """Fungsi wrapper pendistribusi request ke model yang diplih di .env"""
+    if OCR_PROVIDER == "openai":
+        return _openai_chat(messages, max_tokens)
+    elif OCR_PROVIDER == "gemini":
+        return _gemini_chat(messages, max_tokens)
+    else:
+        return _ollama_chat(messages, max_tokens)
 
 def strip_json_fences(text: str) -> str:
     text  = text.strip()
@@ -155,7 +271,7 @@ def crop_logo_with_llm(image_b64: str, image_path: str, output_path: str = "temp
     messages = [{"role": "user", "content": prompt, "images": [image_b64]}]
 
     try:
-        raw     = ollama_chat(messages, max_tokens=200)
+        raw     = vision_chat(messages, max_tokens=200)
         cleaned = strip_json_fences(raw)
         data    = json.loads(cleaned)
     except Exception as e:
@@ -356,7 +472,7 @@ def phase1_analyse(image_b64: str) -> dict:
         {"role": "system", "content": PHASE1_SYSTEM},
         {"role": "user",   "content": PHASE1_USER, "images": [image_b64]},
     ]
-    raw     = ollama_chat(messages, max_tokens=1024)
+    raw     = vision_chat(messages, max_tokens=1024)
     cleaned = strip_json_fences(raw)
     try:
         return json.loads(cleaned)
@@ -411,7 +527,7 @@ def phase15_validate(doc: dict, image_b64: str) -> dict:
         + "\n".join(questions)
     )
     messages = [{"role": "user", "content": prompt, "images": [image_b64]}]
-    raw      = ollama_chat(messages, max_tokens=128)
+    raw      = vision_chat(messages, max_tokens=128)
     lines    = [l.strip().lower() for l in raw.strip().splitlines() if l.strip()]
 
     q_map = {q[:2]: q for q in questions}
@@ -866,7 +982,7 @@ def phase3_extract(prompt: str, image_b64: str, doc: dict) -> str:
         tag = f"[Phase 3] Attempt {attempt}/{MAX_RETRIES + 1}"
         print(f"{tag} Extracting HTML ...")
         messages = [{"role": "user", "content": prompt, "images": [image_b64]}]
-        raw  = ollama_chat(messages, max_tokens=MAX_TOKENS)
+        raw  = vision_chat(messages, max_tokens=MAX_TOKENS)
         html = strip_html_fences(raw)
         issues = _validate_html(html, doc)
         if not issues:
@@ -1065,9 +1181,9 @@ def main():
                         help="Convert an existing HTML file to DOCX (skip OCR)")
     parser.add_argument("--ollama-url", default=OLLAMA_URL,
                         help=f"Ollama API URL (default: {OLLAMA_URL})")
-    parser.add_argument("--model",      default=MODEL,
-                        help=f"Model (default: {MODEL})")
-
+    parser.add_argument("--model",      default=OLLAMA_MODEL,
+                        help=f"Model (default: {OLLAMA_MODEL})")
+    
     args = parser.parse_args()
     OLLAMA_URL = args.ollama_url
     MODEL      = args.model
