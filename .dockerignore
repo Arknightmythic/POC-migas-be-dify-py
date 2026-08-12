@@ -1,0 +1,28 @@
+# [B-52] Tanpa file ini, `COPY . /app/` menyalin .venv (ratusan MB) dan
+# direktori kerja OCR ke dalam image.
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+.git/
+.gitignore
+
+# Secret di-inject lewat env_file saat runtime, jangan dibakar ke image.
+.env
+.env.*
+!.env.example
+
+# Direktori kerja runtime -> volume, bukan image
+image_processor_temp/
+ai_temp_input/
+input_files/
+output_files/
+
+*.log
+*.md
+Dockerfile
+docker-compose*.yml
+docker-compose*.yaml

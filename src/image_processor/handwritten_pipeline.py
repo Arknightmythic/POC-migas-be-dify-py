@@ -12,9 +12,19 @@ import requests
 import tempfile
 import shutil
 
-# OLLAMA_URL = "http://10.1.237.104:11434/api/chat"
-OLLAMA_URL  = "http://103.67.43.152/ollama2/api/chat"
-MODEL = "qwen3-vl:8b-instruct-bf16"
+# [B-06] URL & model dulu di-hardcode ke http://103.67.43.152/ollama2/api/chat
+# (host tidak terjangkau) dan mengabaikan .env. Sekarang pemilihan provider
+# ditangani vision_provider.py lewat env VISION_PROVIDER / OLLAMA_URL /
+# OLLAMA_VISION_MODEL / GEMINI_VISION_MODEL.
+try:
+    from .vision_provider import vision_chat, describe_provider, VisionTruncated
+    from .json_repair import loads_lenient
+    from .example_leak import find_example_leaks
+except ImportError:  # dijalankan langsung sebagai script (python handwritten_pipeline.py)
+    from vision_provider import vision_chat, describe_provider, VisionTruncated
+    from json_repair import loads_lenient
+    from example_leak import find_example_leaks
+
 TEMPERATURE = 0.1
 MAX_TOKENS = 6000
 MAX_RETRIES = 2
@@ -25,24 +35,16 @@ def load_image_base64(path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-def ollama_chat(messages: list, max_tokens: int = MAX_TOKENS) -> str:
-    payload = {
-        "model": MODEL,
-        "messages": messages,
-        "stream": False,
-        "options": {
-            "temperature": TEMPERATURE,
-            "top_p": 0.9,
-            "num_predict": max_tokens,
-        },
-    }
-    resp = requests.post(OLLAMA_URL, json=payload, timeout=300)
-    resp.raise_for_status()
-    data = resp.json()
-    content = data.get("message", {}).get("content", "")
-    if not content:
-        raise RuntimeError(f"Empty response from Ollama:\n{data}")
-    return content
+def ollama_chat(messages: list, max_tokens: int = MAX_TOKENS, json_mode: bool = False) -> str:
+    """
+    Nama dipertahankan supaya seluruh call site di file ini tidak berubah,
+    tapi isinya sekarang mendelegasikan ke provider aktif (Gemini atau Ollama).
+
+    json_mode=True meminta provider mengunci output ke JSON valid -- pencegahan
+    di hulu untuk B-45 (qwen2.5vl kadang menghasilkan JSON tanpa koma).
+    """
+    return vision_chat(messages, max_tokens=max_tokens, temperature=TEMPERATURE,
+                       json_mode=json_mode)
 
 
 def strip_json_fences(text: str) -> str:
@@ -168,13 +170,15 @@ def phase1_analyse(image_b64: str) -> dict:
         {"role": "system", "content": PHASE1_SYSTEM},
         {"role": "user", "content": PHASE1_USER, "images": [image_b64]},
     ]
-    raw = ollama_chat(messages, max_tokens=1024)
-    cleaned = strip_json_fences(raw)
+    raw = ollama_chat(messages, max_tokens=1024, json_mode=True)
+    # [B-45] loads_lenient menambal koma yang hilang -- qwen2.5vl sering
+    # melewatkannya persis di baris kosong antar kelompok field, yang dulu
+    # menggagalkan SELURUH dokumen padahal analisisnya sendiri sudah benar.
     try:
-        return json.loads(cleaned)
+        return loads_lenient(raw)
     except json.JSONDecodeError as e:
         raise RuntimeError(
-            f"Phase 1 invalid JSON.\nRaw:\n{raw}\nCleaned:\n{cleaned}\nError:{e}"
+            f"Phase 1 invalid JSON.\nRaw:\n{raw}\nError:{e}"
         )
 
 
@@ -288,14 +292,14 @@ KV_MULTILINE_EXAMPLE = """\
         <td style='padding-right:8px; vertical-align:top; white-space:nowrap;'>Mengingat</td>
         <td style='vertical-align:top; white-space:nowrap;'>:</td>
         <td style='padding-left:8px; vertical-align:top;'>
-            Masih adanya Pungutan liar yang di lakukan oleh oknum – oknum...
+            [ISI POIN MENIMBANG]
         </td>
     </tr>
     <tr>
         <td style='padding-right:8px; vertical-align:top; white-space:nowrap;'>Memperhatikan</td>
         <td style='vertical-align:top; white-space:nowrap;'>:</td>
         <td style='padding-left:8px; vertical-align:top;'>
-        Perintah Panglima Tertinggi Presiden Republik Indonesia
+        [ISI POIN MEMPERHATIKAN]
         </td>
     </tr>
 </table>"""
@@ -334,29 +338,29 @@ DUAL_BOTTOM_EXAMPLE = """\
   <div style='min-width:200px;'>
     <p style='margin:0; margin-bottom:4pt;'><strong>Tembusan :</strong></p>
     <p style='margin:0; margin-bottom:2pt;'>Kepada Yth,</p>
-    <p style='margin:0; margin-bottom:2pt;'>1. Presiden Republik Indonesia</p>
-    <p style='margin:0; margin-bottom:2pt;'>2. Menkopolhukam</p>
-    <p style='margin:0; margin-bottom:2pt;'>3. Panglima TNI</p>
+    <p style='margin:0; margin-bottom:2pt;'>1. [PENERIMA TEMBUSAN 1]</p>
+    <p style='margin:0; margin-bottom:2pt;'>2. [PENERIMA TEMBUSAN 2]</p>
+    <p style='margin:0; margin-bottom:2pt;'>3. [PENERIMA TEMBUSAN 3]</p>
   </div>
   <div style='text-align:center; min-width:220px;'>
     <table border='0' cellpadding='0' cellspacing='2' style='margin:0 auto; text-align:left;'>
       <tr>
         <td style='white-space:nowrap; padding-right:6px;'>Ditetapkan di</td>
         <td>:</td>
-        <td style='padding-left:6px;'>Jakarta</td>
+        <td style='padding-left:6px;'>[KOTA]</td>
       </tr>
       <tr>
         <td style='white-space:nowrap; padding-right:6px;'>Tanggal</td>
         <td>:</td>
-        <td style='padding-left:6px;'>16 Januari 2017</td>
+        <td style='padding-left:6px;'>[TANGGAL]</td>
       </tr>
     </table>
     <br/>
-    <strong>BADAN INTELIJEN NEGARA</strong><br/>
-    <strong>KEPALA SATKORLAK OPSINSUS</strong><br/>
-    <strong>SEKURITAS ASET PERBENDAHARAAN NEGARA</strong><br/>
+    <strong>[NAMA INSTANSI]</strong><br/>
+    <strong>[JABATAN BARIS 1]</strong><br/>
+    <strong>[JABATAN BARIS 2]</strong><br/>
     <br/><br/><br/>
-    <strong>( ERRY MARSONO )</strong>
+    <strong>( [NAMA PENANDA TANGAN] )</strong>
   </div>
 </div>
 <div style='clear:both;'></div>"""
@@ -671,7 +675,26 @@ EXACT STRUCTURE:
         f"Convert the document image (type:{doc_type}, complexity:{complexity})\n"
         f"into complete structure-preserving HTML.\n\n"
         f"CRITICAL:\n"
-        f"- Follow ALL rules and EXAMPLE snippets exactly.\n"
+        # [B-47] Kalimat lama "Follow ALL rules and EXAMPLE snippets exactly"
+        # justru menyuruh model MENYALIN contohnya. qwen2.5vl menuruti itu
+        # secara harfiah dan menyisipkan isi contoh -- dulu berupa kutipan surat
+        # dinas sungguhan (blok Tembusan, nama instansi, nama penanda tangan,
+        # tanggal) -- ke dalam hasil OCR formulir kampus. Teks itu sama sekali
+        # tidak ada di gambar, tapi hasilnya terlihat resmi, jadi kesalahannya
+        # tidak tampak seperti kesalahan.
+        #
+        # Tiga lapis penanganan:
+        #   1. instruksi di bawah: contoh = STRUKTUR saja
+        #   2. isi contoh diganti placeholder ([NAMA INSTANSI], [TANGGAL], dst)
+        #      sehingga tidak ada teks spesifik yang bisa disalin
+        #   3. example_leak.py + _validate_html: kalau tetap bocor, Phase 3
+        #      mengulang, dan kalau masih bocor dokumennya digagalkan
+        f"- EXAMPLE snippets show STRUCTURE ONLY. Copy their HTML tags, styles and\n"
+        f"  layout pattern, but NEVER copy their text content.\n"
+        f"- Every word you output MUST be visible in the image. If something is not\n"
+        f"  in the image, do NOT write it. Never invent names, dates, numbers,\n"
+        f"  institutions, or 'Tembusan' recipients.\n"
+        f"- Follow ALL formatting rules below.\n"
         f"- Output ONLY raw HTML: no explanations, no prose, no code fences.\n"
         f"- Do NOT omit any text. Preserve all visual positions and indentation.\n\n"
         + "\n".join(rules)
@@ -685,6 +708,17 @@ EXACT STRUCTURE:
 
 def _validate_html(html: str, doc: dict) -> list:
     issues = []
+
+    # [B-47] Isi contoh few-shot bocor ke output = teks KARANGAN yang tidak ada
+    # di gambar. Ini pelanggaran paling serius, jadi diperiksa paling awal.
+    leaks = find_example_leaks(html)
+    if leaks:
+        issues.append(
+            f"FABRICATED CONTENT: the output contains text copied from the EXAMPLE "
+            f"snippets ({', '.join(leaks)}). Those examples are structure templates "
+            f"only. Rewrite using ONLY text that is actually visible in the image."
+        )
+
     if doc.get("has_key_value_block") and "<table border='0'" not in html:
         issues.append(
             "Missing borderless KV table — colon-aligned fields not in a table."
@@ -721,11 +755,21 @@ def _validate_html(html: str, doc: dict) -> list:
 
 
 def phase3_extract(prompt: str, image_b64: str, doc: dict) -> str:
+    _budget = MAX_TOKENS
     for attempt in range(1, MAX_RETRIES + 2):
         tag = f"[Phase 3] Attempt {attempt}/{MAX_RETRIES + 1}"
         print(f"{tag} Extracting HTML ...")
         messages = [{"role": "user", "content": prompt, "images": [image_b64]}]
-        raw = ollama_chat(messages, max_tokens=MAX_TOKENS)
+        # [B-48] Kalau provider memotong output karena kehabisan token, naikkan
+        # plafonnya lalu ulangi -- jangan kirim HTML yang terpenggal. Plafon
+        # hanya batas atas; penagihan mengikuti token yang benar-benar dipakai.
+        try:
+            raw = ollama_chat(messages, max_tokens=_budget)
+        except VisionTruncated as e:
+            print(f"{tag} {e}")
+            _budget = min(_budget * 2, 32000)
+            print(f"{tag} Menaikkan batas output ke {_budget} lalu mengulang ...")
+            continue
         html = strip_html_fences(raw)
         issues = _validate_html(html, doc)
         if not issues:
@@ -735,13 +779,30 @@ def phase3_extract(prompt: str, image_b64: str, doc: dict) -> str:
         for iss in issues:
             print(f"  - {iss}")
         if attempt <= MAX_RETRIES:
+            # [B-47] Umpan balik lama berbunyi "Follow the rules and EXAMPLE
+            # snippets exactly" -- justru MEMPERKUAT penyalinan isi contoh yang
+            # sedang kita koreksi, sehingga retry mengulang kesalahan yang sama.
             feedback = (
                 "The previous HTML output had these structural problems:\n"
                 + "\n".join(f"  * {i}" for i in issues)
                 + "\n\nFix ALL issues and regenerate complete HTML. "
-                "Follow the rules and EXAMPLE snippets exactly. Output ONLY raw HTML."
+                "Use the EXAMPLE snippets for STRUCTURE ONLY -- never copy their "
+                "text. Every word must come from the image. Output ONLY raw HTML."
             )
             prompt = prompt + "\n\n" + feedback
+
+    # [B-47] Jangan pernah mengirimkan output yang masih memuat teks karangan.
+    # Isu struktural lain (mis. flex container) hanya menurunkan kerapian jadi
+    # masih boleh lewat; tapi konten yang DIKARANG membuat dokumen tampak resmi
+    # padahal isinya tidak ada di gambar -- lebih baik dokumennya digagalkan.
+    leaks = find_example_leaks(html)
+    if leaks:
+        raise RuntimeError(
+            "Phase 3 gagal: output masih memuat teks yang disalin dari EXAMPLE "
+            f"snippet ({', '.join(leaks)}) setelah {MAX_RETRIES + 1} percobaan. "
+            "Teks itu TIDAK ADA di gambar, jadi hasilnya tidak dikirim."
+        )
+
     print("[Phase 3] Max retries reached — returning best available output.")
     return html
 
@@ -893,7 +954,13 @@ def run_pipeline(
 
 
 def main():
-    global OLLAMA_URL, MODEL
+    # [B-28] Untuk pemakaian CLI: cegah UnicodeEncodeError saat output
+    # di-redirect ke file di Windows.
+    try:
+        from ..console_utf8 import enable_utf8_console
+    except ImportError:
+        from console_utf8 import enable_utf8_console
+    enable_utf8_console()
 
     parser = argparse.ArgumentParser(
         description="Document OCR Pipeline v3.1 — Image → HTML → DOCX",
@@ -937,16 +1004,37 @@ def main():
         metavar="HTML_FILE",
         help="Convert an existing HTML file to DOCX (skip OCR)",
     )
+    # [B-06] Provider sekarang dipilih lewat environment (vision_provider.py).
+    # Flag CLI dipertahankan sebagai cara override cepat: nilainya di-set ke
+    # env sebelum panggilan pertama, supaya satu sumber kebenaran tetap env.
+    parser.add_argument(
+        "--provider",
+        default=None,
+        choices=["gemini", "ollama"],
+        help="Override VISION_PROVIDER untuk run ini",
+    )
     parser.add_argument(
         "--ollama-url",
-        default=OLLAMA_URL,
-        help=f"Ollama API URL (default: {OLLAMA_URL})",
+        default=None,
+        help="Override OLLAMA_URL (base URL atau endpoint /api/chat)",
     )
-    parser.add_argument("--model", default=MODEL, help=f"Model (default: {MODEL})")
+    parser.add_argument(
+        "--model", default=None, help="Override model vision untuk provider aktif"
+    )
 
     args = parser.parse_args()
-    OLLAMA_URL = args.ollama_url
-    MODEL = args.model
+
+    if args.provider:
+        os.environ["VISION_PROVIDER"] = args.provider
+    if args.ollama_url:
+        os.environ["OLLAMA_URL"] = args.ollama_url
+    if args.model:
+        if os.getenv("VISION_PROVIDER", "gemini").lower() == "ollama":
+            os.environ["OLLAMA_VISION_MODEL"] = args.model
+        else:
+            os.environ["GEMINI_VISION_MODEL"] = args.model
+
+    print(f"[Vision] Provider: {describe_provider()}")
 
 
 
@@ -982,7 +1070,10 @@ def main():
             make_docx=not args.no_docx,
         )
     except requests.ConnectionError:
-        print(f"\n[Error] Cannot connect to Ollama at {OLLAMA_URL}", file=sys.stderr)
+        print(
+            f"\n[Error] Tidak bisa menghubungi provider vision: {describe_provider()}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     except RuntimeError as exc:
         print(f"\n[Error] {exc}", file=sys.stderr)

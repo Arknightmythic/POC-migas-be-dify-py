@@ -1,19 +1,30 @@
-# FastAPI framework
+# =============================================================
+# kai-dify — AI Document Processing Service
+#
+# CATATAN (2026-08-10): file ini sebelumnya berisi pin duplikat yang
+# bentrok sehingga `pip install -r requirements.txt` gagal dengan
+# "Double requirement given". Yang diperbaiki:
+#   - numpy        : 2.3.2 vs 2.4.3   -> dipakai 2.4.3 (kompatibel opencv 4.13)
+#   - ollama       : unpinned + 0.5.3 -> dipakai 0.5.3
+#   - python-dotenv: unpinned + 1.1.1 -> dipakai 1.1.1
+#   - requests     : 2.32.5 dua kali  -> satu baris
+# Satu paket = satu baris. Jangan tambah entri unpinned untuk paket
+# yang sudah dipin di bawah.
+# =============================================================
+
+# --- FastAPI framework ---
 fastapi
 uvicorn[standard]
-python-multipart # For file uploads
+python-multipart          # untuk file upload
+aiofiles                  # untuk async file saving
 
-# Core processing libraries from your script
+# --- Core processing ---
 PyMuPDF
 Pillow
 reportlab
-docx2pdf
-ollama
-python-dotenv
-aiofiles # For async file saving
+docx2pdf                  # butuh Microsoft Word terinstall di Windows
 
-
-
+# --- Pinned dependencies ---
 aiohappyeyeballs==2.6.1
 aiohttp==3.12.15
 aiosignal==1.4.0
@@ -46,7 +57,7 @@ langsmith==0.4.17
 marshmallow==3.26.1
 multidict==6.6.4
 mypy_extensions==1.1.0
-numpy==2.3.2
+numpy==2.4.3
 ollama==0.5.3
 openai==1.101.0
 orjson==3.11.2
@@ -73,13 +84,24 @@ urllib3==2.5.0
 yarl==1.20.1
 zstandard==0.24.0
 
-google-generativeai
+# --- Google Gemini ---
+# [B-14] Kode project ini sudah TIDAK memanggil `google.generativeai` lagi
+# (sudah dimigrasi ke `google-genai`).
+google-genai==2.17.0
+#
+# CATATAN: langchain-google-genai 2.0.10 masih mensyaratkan
+# google-generativeai (>=0.8.0,<0.9.0), jadi paket EOL itu tetap ikut
+# terinstall sebagai dependency transitif -- bukan karena kode kita.
+# Dipakai untuk GoogleGenerativeAIEmbeddings di src/dify_processor/llm.py
+# (yang saat ini hanya dibutuhkan oleh runner.py, dan runner.py belum
+# dipanggil dari mana pun). Kalau nanti mau benar-benar bebas dari paket EOL:
+# naikkan versi langchain-google-genai, atau lepas ketergantungan pada
+# GoogleGenerativeAIEmbeddings.
 langchain-google-genai
 
+# --- HTML -> DOCX pipeline ---
 beautifulsoup4==4.14.3
 lxml==6.0.2
 python-docx==1.2.0
-opencv-python==4.13.0.92
-numpy==2.4.3
-requests==2.32.5
 htmldocx==0.0.6
+opencv-python==4.13.0.92

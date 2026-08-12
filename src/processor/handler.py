@@ -1,5 +1,6 @@
 # src/processor/handler.py
 
+import asyncio
 import os
 import shutil
 import httpx
@@ -30,7 +31,16 @@ class DocumentProcessorHandler:
             raise HTTPException(status_code=500, detail="An internal error occurred during Dify deletion.")
 
     async def notify_main_api(self, doc_id: UUID, status: str, pdf_path: str = None, txt_path: str = None):
-        """Kirim status kembali ke API Utama."""
+        """
+        Kirim status kembali ke API Utama, dengan RETRY.
+
+        [B-43] Masalahnya sama seperti di image_processor/handler.py: callback
+        fire-and-forget, sekali gagal dokumen menggantung selamanya walaupun
+        pemrosesan sukses. Di sini bahkan lebih parah -- response-nya tidak
+        pernah diperiksa sama sekali (`await client.post(...)` tanpa
+        raise_for_status), jadi kai-be bisa menjawab 500 dan sisi ini tetap
+        menganggap berhasil.
+        """
         if not self.logic.MAIN_API_CALLBACK_URL:
             print("❌ MAIN_API_CALLBACK_URL not set. Cannot send status update.")
             return
@@ -41,13 +51,35 @@ class DocumentProcessorHandler:
             "searchable_pdf_path": pdf_path,
             "processed_text_path": txt_path,
         }
-        
-        async with httpx.AsyncClient() as client:
+
+        attempts = max(1, int(os.getenv("CALLBACK_MAX_ATTEMPTS", "5")))
+        timeout = float(os.getenv("CALLBACK_TIMEOUT", "120"))
+
+        for attempt in range(1, attempts + 1):
             try:
-                print(f"🚀 Sending callback for doc {doc_id} with status: {status}")
-                await client.post(self.logic.MAIN_API_CALLBACK_URL, json=payload, timeout=60)
-            except httpx.RequestError as e:
-                print(f"❌ Failed to send callback for doc {doc_id}: {e}")
+                print(f"🚀 Sending callback ({attempt}/{attempts}) for doc {doc_id} "
+                      f"with status: {status}")
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        self.logic.MAIN_API_CALLBACK_URL, json=payload, timeout=timeout
+                    )
+                    response.raise_for_status()
+                print(f"✅ Callback sent successfully for doc {doc_id}")
+                return
+            except Exception as e:
+                if attempt == attempts:
+                    print(
+                        f"❌❌ CALLBACK GAGAL PERMANEN untuk doc {doc_id} setelah "
+                        f"{attempts} percobaan: {repr(e)}\n"
+                        f"     Status dokumen ini akan MENGGANTUNG di database.\n"
+                        f"     Payload yang gagal terkirim (untuk kirim ulang manual):\n"
+                        f"     {payload}"
+                    )
+                    return
+                wait = min(2 ** attempt, 30)
+                print(f"⚠️ Callback doc {doc_id} gagal ({repr(e)}), "
+                      f"coba lagi dalam {wait}s ...")
+                await asyncio.sleep(wait)
 
     async def process_batch(self, tasks: List[Dict]):
         """Process files from a list of tasks containing saved file paths."""

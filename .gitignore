@@ -25,6 +25,9 @@ __pycache__/
 .env
 .env.*.local
 .env.local
+# termasuk backup (mis. .env.server.bak.YYYYMMDD) — berisi secret
+.env.*
+!.env.example
 
 # --- Input/Output and Temporary Files ---
 # Ignore uploaded files, processed results, and temporary files

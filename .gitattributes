@@ -1,0 +1,7 @@
+# Dikembangkan di Windows, dijalankan di server Ubuntu. Tanpa ini Dockerfile
+# bisa ter-checkout dengan CRLF dan mematahkan baris sambung (\) di RUN.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+.dockerignore   text eol=lf

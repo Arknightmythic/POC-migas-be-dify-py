@@ -15,11 +15,24 @@ class AIServiceLogic:
         self.ocr_handler = OcrHandler()
         
        # --- PERUBAHAN: Setup LLM Dinamis ---
+        # [B-07] Sebelumnya pemilihan hanya dua arah (openai vs "selain itu"),
+        # sehingga LLM_PROVIDER=ollama diam-diam memakai kredensial Gemini.
+        # Sekarang tiga provider dipetakan eksplisit.
         self.llm_provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-        
-        api_key = os.getenv("OPENAI_API_KEY") if self.llm_provider == "openai" else os.getenv("GEMINI_API_KEY")
-        model_name = os.getenv("OPENAI_MODEL") if self.llm_provider == "openai" else os.getenv("GEMINI_MODEL")
-        embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL") if self.llm_provider == "openai" else os.getenv("GEMINI_EMBEDDING_MODEL")
+
+        if self.llm_provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY")
+            model_name = os.getenv("OPENAI_MODEL")
+            embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL")
+        elif self.llm_provider == "ollama":
+            # Ollama dilayani lewat endpoint OpenAI-compatible (lihat LLM.__init__).
+            api_key = os.getenv("OLLAMA_API_KEY", "ollama")
+            model_name = os.getenv("OLLAMA_MODEL") or os.getenv("OLLAMA_VISION_MODEL")
+            embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:8b")
+        else:
+            api_key = os.getenv("GEMINI_API_KEY")
+            model_name = os.getenv("GEMINI_MODEL")
+            embedding_model = os.getenv("GEMINI_EMBEDDING_MODEL")
 
         self.dify_llm = LLM(
             provider=self.llm_provider,

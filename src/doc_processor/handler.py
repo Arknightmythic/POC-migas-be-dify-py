@@ -2,7 +2,8 @@
 
 import os
 import shutil, requests
-import fitz  # PyMuPDF
+# [B-24] `import fitz` dihapus: tidak dipakai di file ini, dan nama `fitz`
+# sudah deprecated (PyMuPDF menyarankan `import pymupdf`).
 from . import utils # Import our new utils module
 
 class DocumentProcessorHandler:
@@ -31,48 +32,75 @@ class DocumentProcessorHandler:
 
         print(f"\n--- Starting process for: {current_filename} (As: {api_filename}) ---")
 
-        if extension.lower() == '.pdf':
-            try:
-                print(f"PDF detected. Forwarding to Extractor & Chunker API as '{api_filename}'...")
-                
-                # Sesuaikan URL dan Port dengan tempat API baru kamu berjalan
-                api_url = "http://172.16.12.98:9781/extract"
+        # [B-26] Lihat catatan di bawah. Di-resolve di sini supaya URL-nya
+        # tersedia juga di handler error.
+        base_url = os.getenv("EXTRACT_SERVICE_URL", "http://localhost:9781").rstrip("/")
+        api_url = f"{base_url}/extract"
 
-                with open(input_path, "rb") as f:
-                    response = requests.post(
-                        api_url,
-                        # Parameter "mode" dihapus karena sudah dihandle oleh .env di server API
-                        files={"file": (api_filename, f, "application/pdf")}
-                    )
+        try:
+            if extension.lower() != '.pdf':
+                # [B-27] Dulu ini hanya print lalu jalan terus, sehingga dokumen
+                # tetap ditandai "completed". Sekarang dianggap gagal.
+                raise ValueError(f"Format file {extension} tidak didukung (hanya .pdf).")
 
-                if response.status_code != 200:
-                    print(f"Extractor API returned error: {response.text}")
-                    return
-                
-                # 1. Simpan PDF (Copy file asli ke output)
-                shutil.copy(input_path, output_pdf_path)
+            print(f"PDF detected. Forwarding to Extractor & Chunker API as '{api_filename}'...")
 
-                # 2. Ambil text dari JSON response dan simpan sebagai .txt
-                data = response.json()
-                
-                # MENGUBAH KEY RESPONSE:
-                # Menyesuaikan dengan key dari FastAPI kita yang baru
-                cleaned_text = data.get("hasil_ekstraksi", "")
-                
-                if cleaned_text:
-                    with open(output_txt_path, "w", encoding="utf-8") as f:
-                        f.write(cleaned_text)
-                    print(f"Text extracted, chunked, and saved to: {output_txt_path}")
-                else:
-                    print("Warning: API returned empty 'hasil_ekstraksi'")
+            # [B-26] URL ini sebelumnya di-hardcode ke http://172.16.12.98:9781/extract.
+            # Port 9781 tertutup baik di server maupun di lokal, jadi SELURUH
+            # pipeline PDF mati. Service yang dimaksud adalah kai-extract
+            # (POST /extract -> {"hasil_ekstraksi": ...}), yang harus
+            # dijalankan sendiri:
+            #   cd kai-extract && uvicorn main:app --port 9781
+            with open(input_path, "rb") as f:
+                # Timeout ditambahkan: sebelumnya tanpa timeout, jadi kalau
+                # service extract diam saja, worker menggantung tanpa batas.
+                response = requests.post(
+                    api_url,
+                    # Parameter "mode" dihapus karena sudah dihandle oleh .env di server API
+                    files={"file": (api_filename, f, "application/pdf")},
+                    timeout=600,
+                )
 
-            except Exception as e:
-                print(f"Error processing PDF via external API: {e}")
+            if response.status_code != 200:
+                # [B-27] Dulu `return` biasa -> logic.py tidak menemukan output,
+                # lalu dokumen tetap dilaporkan "completed" dengan file_path
+                # NULL (silent data loss). Sekarang raise supaya
+                # DocumentProcessorHandler.process_batch menandainya "failed".
+                raise RuntimeError(
+                    f"Extractor API ({api_url}) balas HTTP {response.status_code}: "
+                    f"{response.text[:300]}"
+                )
 
-        else:
-            print(f"File format {extension} is not supported.")
+            # 1. Simpan PDF (Copy file asli ke output)
+            shutil.copy(input_path, output_pdf_path)
 
-        # Clean up the original input file
-        if os.path.exists(input_path):
-            os.remove(input_path)
-        print(f"--- Finished processing: {current_filename} ---")
+            # 2. Ambil text dari JSON response dan simpan sebagai .txt
+            data = response.json()
+
+            # MENGUBAH KEY RESPONSE:
+            # Menyesuaikan dengan key dari FastAPI kita yang baru
+            cleaned_text = data.get("hasil_ekstraksi", "")
+
+            if not cleaned_text:
+                raise RuntimeError(
+                    f"Extractor API ({api_url}) mengembalikan 'hasil_ekstraksi' kosong."
+                )
+
+            with open(output_txt_path, "w", encoding="utf-8") as f:
+                f.write(cleaned_text)
+            print(f"Text extracted, chunked, and saved to: {output_txt_path}")
+
+        except requests.RequestException as e:
+            # Bedakan error jaringan supaya pesannya langsung menunjuk penyebab.
+            raise RuntimeError(
+                f"Tidak bisa menghubungi Extractor API di {api_url}. "
+                f"Pastikan service kai-extract jalan (uvicorn main:app --port 9781) "
+                f"dan EXTRACT_SERVICE_URL benar. Detail: {e!r}"
+            ) from e
+
+        finally:
+            # Clean up the original input file -- tetap dijalankan walau gagal,
+            # supaya temp file tidak menumpuk.
+            if os.path.exists(input_path):
+                os.remove(input_path)
+            print(f"--- Finished processing: {current_filename} ---")

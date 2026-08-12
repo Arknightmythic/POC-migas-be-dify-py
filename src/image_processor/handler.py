@@ -1,4 +1,5 @@
 # src/image_processor/handler.py
+import asyncio
 import os
 import httpx
 from uuid import UUID
@@ -27,18 +28,62 @@ class ImageProcessorHandler:
         print("ImageProcessorHandler Initialized")
 
     async def notify_main_api(self, payload: dict):
+        """
+        Kirim status akhir ke kai-be, dengan RETRY.
+
+        [B-43] Sebelumnya callback ini fire-and-forget: sekali gagal, statusnya
+        hilang selamanya dan dokumen menggantung di 'pending'/'processing'
+        walaupun seluruh pemrosesan SUKSES dan file-nya sudah ter-upload.
+        Kejadian nyata (2026-08-11): dokumen 0f3bd0eb... selesai penuh (PDF +
+        DOCX ter-upload) tapi callback-nya ReadTimeout, sehingga baris DB-nya
+        tetap 'pending' dengan file_path NULL -- padahal file fisiknya ada.
+        Penyebab timeout: kai-be menulis ke DB server lewat VPN, dan koneksi
+        VPN sempat tersendat.
+
+        Tiga hal yang diperbaiki:
+          1. RETRY dengan backoff -- kegagalan sesaat tidak lagi permanen.
+          2. repr(e), bukan str(e). ReadTimeout('') mem-print string KOSONG,
+             sehingga log lama hanya menampilkan "Failed to send callback: "
+             tanpa sebab apa pun.
+          3. Menangkap HTTPStatusError juga. `raise_for_status()` melempar
+             HTTPStatusError yang BUKAN turunan RequestError, jadi dulu error
+             4xx/5xx dari kai-be lolos dari except ini, naik ke pemanggil, dan
+             di jalur sukses malah memicu blok except di convert_image_to_pdf
+             -> dokumen yang sudah 'completed' dikirim ulang sebagai 'failed'.
+        """
         if not self.callback_url:
             print("⚠️ IMAGE_EXTRACTION_CALLBACK_URL not set. Cannot send status update.")
             return
 
-        async with httpx.AsyncClient() as client:
+        doc_id = payload.get("document_id")
+        attempts = max(1, int(os.getenv("CALLBACK_MAX_ATTEMPTS", "5")))
+        timeout = float(os.getenv("CALLBACK_TIMEOUT", "120"))
+
+        for attempt in range(1, attempts + 1):
             try:
-                print(f"🚀 Sending callback to {self.callback_url} with payload: {payload}")
-                response = await client.post(self.callback_url, json=payload, timeout=60)
-                response.raise_for_status()
-                print(f"✅ Callback sent successfully for doc {payload.get('document_id')}")
-            except httpx.RequestError as e:
-                print(f"❌ Failed to send callback for doc {payload.get('document_id')}: {e}")
+                print(f"🚀 Sending callback ({attempt}/{attempts}) to {self.callback_url} "
+                      f"with payload: {payload}")
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(self.callback_url, json=payload, timeout=timeout)
+                    response.raise_for_status()
+                print(f"✅ Callback sent successfully for doc {doc_id}")
+                return
+            except Exception as e:
+                if attempt == attempts:
+                    # Ini kondisi yang bikin dokumen menggantung. Buat sekeras
+                    # mungkin terlihat di log, lengkap dengan cara pulihnya.
+                    print(
+                        f"❌❌ CALLBACK GAGAL PERMANEN untuk doc {doc_id} setelah "
+                        f"{attempts} percobaan: {repr(e)}\n"
+                        f"     Status dokumen ini akan MENGGANTUNG di database.\n"
+                        f"     Payload yang gagal terkirim (untuk kirim ulang manual):\n"
+                        f"     {payload}"
+                    )
+                    return
+                wait = min(2 ** attempt, 30)
+                print(f"⚠️ Callback doc {doc_id} gagal ({repr(e)}), "
+                      f"coba lagi dalam {wait}s ...")
+                await asyncio.sleep(wait)
 
     async def upload_file_to_main_be(self, file_path: str, folder_category: str):
         if not os.path.exists(file_path): return None

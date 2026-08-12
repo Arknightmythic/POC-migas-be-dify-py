@@ -4,6 +4,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from dotenv import load_dotenv
+
+# [B-28] Wajib dipanggil sebelum kode lain sempat print emoji/panah, kalau
+# tidak proses mati dengan UnicodeEncodeError saat stdout di-redirect ke file
+# (nohup / docker logs) di Windows. Lihat src/console_utf8.py.
+from src.console_utf8 import enable_utf8_console
+enable_utf8_console()
 # --- PERBAIKAN DI SINI ---
 # Impor router yang benar dari src/processor/routes.py
 from src.processor.routes import router as processor_router
