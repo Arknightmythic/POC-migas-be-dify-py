@@ -51,14 +51,27 @@ class DocumentProcessorHandler:
             # (POST /extract -> {"hasil_ekstraksi": ...}), yang harus
             # dijalankan sendiri:
             #   cd kai-extract && uvicorn main:app --port 9781
+            # [B-63] Timeout dinaikkan 600 -> 1800 detik (bisa diatur lewat
+            # EXTRACT_TIMEOUT).
+            #
+            # kai-extract sekarang memanggil Gemini SATU KALI PER HALAMAN, karena
+            # mengirim seluruh PDF sekaligus membuat model mengerjakan satu
+            # halaman saja lalu berhenti dengan finish_reason=STOP -- 96% isi
+            # hilang tanpa tanda kesalahan apa pun. Konsekuensinya waktu proses
+            # tumbuh sebanding jumlah halaman: dokumen 29 halaman memakan
+            # menit-menitan, jadi batas 600 detik yang lama sudah mepet dan
+            # dokumen yang lebih panjang pasti melewatinya.
+            #
+            # Timeout di sisi ini yang kelewat pendek bukan cuma bikin gagal --
+            # kai-extract tetap MENERUSKAN pekerjaannya (dan tetap menagih token
+            # Gemini) sementara di sini sudah dianggap gagal.
+            timeout_extract = int(os.getenv("EXTRACT_TIMEOUT", "1800"))
             with open(input_path, "rb") as f:
-                # Timeout ditambahkan: sebelumnya tanpa timeout, jadi kalau
-                # service extract diam saja, worker menggantung tanpa batas.
                 response = requests.post(
                     api_url,
                     # Parameter "mode" dihapus karena sudah dihandle oleh .env di server API
                     files={"file": (api_filename, f, "application/pdf")},
-                    timeout=600,
+                    timeout=timeout_extract,
                 )
 
             if response.status_code != 200:
