@@ -25,7 +25,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# [B-61] Acquire::Retries -- jaringan server kantor lambat dan DNS-nya sempat
+# menjawab EAI_AGAIN, membuat apt-get menggantung lalu gagal. Tanpa retry, satu
+# kedipan resolver menggagalkan seluruh build image ini.
+RUN apt-get -o Acquire::Retries=3 update \
+    && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
         tzdata curl \
         libgl1 libglib2.0-0 \
         fonts-dejavu-core \
