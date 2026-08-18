@@ -66,9 +66,14 @@ class DocumentProcessorHandler:
                 # lalu dokumen tetap dilaporkan "completed" dengan file_path
                 # NULL (silent data loss). Sekarang raise supaya
                 # DocumentProcessorHandler.process_batch menandainya "failed".
+                # [B-62] Batas dinaikkan dari 300 -> 900 karakter. Pesan
+                # "ekstraksi TERPOTONG" dari kai-extract panjangnya ~300 karakter
+                # dan justru bagian AKHIR-nya yang memuat cara memperbaikinya --
+                # dengan batas lama, saran itu terpotong dan yang sampai ke
+                # pengguna hanya keluhan tanpa jalan keluar.
                 raise RuntimeError(
                     f"Extractor API ({api_url}) balas HTTP {response.status_code}: "
-                    f"{response.text[:300]}"
+                    f"{response.text[:900]}"
                 )
 
             # 1. Simpan PDF (Copy file asli ke output)
@@ -80,6 +85,18 @@ class DocumentProcessorHandler:
             # MENGUBAH KEY RESPONSE:
             # Menyesuaikan dengan key dari FastAPI kita yang baru
             cleaned_text = data.get("hasil_ekstraksi", "")
+
+            # [B-62] kai-extract melaporkan jumlah halaman/karakter dan
+            # peringatan kewajaran. Tanpa dicetak di sini, ekstraksi yang
+            # mencurigakan (mis. cuma sebagian halaman tersalin) lolos tanpa
+            # jejak apa pun di log pipeline.
+            hal = data.get("total_halaman")
+            kar = data.get("total_karakter")
+            if hal is not None or kar is not None:
+                print(f"Ekstraksi: {kar} karakter dari {hal} halaman, "
+                      f"{data.get('total_chunks')} chunk")
+            for w in (data.get("peringatan") or []):
+                print(f"⚠️ kai-extract: {w}")
 
             if not cleaned_text:
                 raise RuntimeError(
